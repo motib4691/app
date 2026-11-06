@@ -16,7 +16,7 @@ import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.MapLibreMap
-import org.maplibre.android.style.Style
+import org.maplibre.android.maps.Style
 import java.io.File
 
 @Composable

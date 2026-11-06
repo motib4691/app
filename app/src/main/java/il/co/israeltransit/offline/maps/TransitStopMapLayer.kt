@@ -7,7 +7,7 @@ import android.os.Handler
 import android.os.Looper
 import com.google.gson.JsonObject
 import il.co.israeltransit.offline.database.TransitDatabase
-import org.maplibre.android.style.Style
+import org.maplibre.android.maps.Style
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.PropertyFactory.circleColor

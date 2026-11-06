@@ -1,4 +1,3 @@
-
 package il.co.israeltransit.offline
 
 import android.os.Bundle
@@ -13,6 +12,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -34,6 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import il.co.israeltransit.offline.maps.OfflineMapImportScreen
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -53,7 +55,9 @@ private val TransitColors = lightColorScheme(
 
 @Composable
 fun TransitApp() {
-    var currentScreen by remember { mutableStateOf("home") }
+    var currentScreen by remember {
+        mutableStateOf("home")
+    }
 
     BackHandler(enabled = currentScreen != "home") {
         currentScreen = "home"
@@ -71,21 +75,31 @@ fun TransitApp() {
                     "home" -> HomeScreen(
                         onNavigate = { currentScreen = it }
                     )
+
                     "update" -> UpdateDataScreen(
                         onBack = { currentScreen = "home" }
                     )
+
                     "line" -> LineSearchScreen(
                         onBack = { currentScreen = "home" }
                     )
+
                     "station" -> StopSearchScreen(
                         onBack = { currentScreen = "home" }
                     )
+
                     "saved" -> SavedStopsScreen(
                         onBack = { currentScreen = "home" }
                     )
+
                     "route" -> RoutePlannerScreen(
                         onBack = { currentScreen = "home" }
                     )
+
+                    "map" -> OfflineMapImportScreen(
+                        onBack = { currentScreen = "home" }
+                    )
+
                     else -> HomeScreen(
                         onNavigate = { currentScreen = it }
                     )
@@ -124,12 +138,18 @@ private fun HomeScreen(
             "עדכון נתונים",
             "ייבוא ועדכון מאגר התחבורה",
             "update"
+        ),
+        Triple(
+            "מפה לא מקוונת",
+            "התקנת מפה ותצוגת תחנות התחבורה",
+            "map"
         )
     )
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 28.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -157,10 +177,11 @@ private fun HomeScreen(
                 description = item.second,
                 onClick = { onNavigate(item.third) }
             )
+
             Spacer(modifier = Modifier.height(13.dp))
         }
 
-        Spacer(modifier = Modifier.weight(1f))
+        Spacer(modifier = Modifier.height(20.dp))
 
         Text(
             text = "מאגר נתונים מקומי",
@@ -219,7 +240,9 @@ private fun HomeMenuItem(
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold
                 )
+
                 Spacer(modifier = Modifier.height(4.dp))
+
                 Text(
                     text = description,
                     fontSize = 12.sp,

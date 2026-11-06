@@ -2,8 +2,8 @@
 package il.co.israeltransit.offline.database
 
 import android.content.Context
-import android.net.Uri
 import android.database.sqlite.SQLiteDatabase
+import android.net.Uri
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -13,40 +13,62 @@ import java.util.zip.GZIPInputStream
 class TransitDatabase(context: Context) {
 
     private val appContext = context.applicationContext
+    private val storage = TransitStorage(appContext)
 
-    private val databaseDirectory =
-        File(appContext.filesDir, "transit")
+    private val databaseDirectory: File
+        get() = storage.getSelectedDirectory()
 
-    private val databaseFile =
-        File(databaseDirectory, "israel-transit.sqlite")
+    private val databaseFile: File
+        get() = File(databaseDirectory, DATABASE_NAME)
 
-    private val temporaryFile =
-        File(databaseDirectory, "israel-transit.tmp")
+    private val temporaryFile: File
+        get() = File(databaseDirectory, TEMPORARY_NAME)
 
-    private val backupFile =
-        File(databaseDirectory, "israel-transit.backup")
+    private val backupFile: File
+        get() = File(databaseDirectory, BACKUP_NAME)
 
     data class ImportResult(
         val success: Boolean,
         val message: String
     )
 
+    companion object {
+        private const val DATABASE_NAME = "israel-transit.sqlite"
+        private const val TEMPORARY_NAME = "israel-transit.tmp"
+        private const val BACKUP_NAME = "israel-transit.backup"
+        private const val MINIMUM_DATABASE_SIZE = 100L
+    }
+
     init {
         databaseDirectory.mkdirs()
     }
 
+    /**
+     * Imports a SQLite database or a GZIP-compressed SQLite database.
+     *
+     * The new database is first written to a temporary file,
+     * validated, and only then installed.
+     *
+     * The previous database is retained as a backup.
+     */
     @Synchronized
     fun importDatabase(uri: Uri): ImportResult {
         return try {
-            databaseDirectory.mkdirs()
+            check(databaseDirectory.exists() || databaseDirectory.mkdirs()) {
+                "לא ניתן ליצור את תיקיית מסד הנתונים"
+            }
+
             temporaryFile.delete()
 
-            appContext.contentResolver.openInputStream(uri).use { input ->
-                requireNotNull(input) {
-                    "לא ניתן לקרוא את הקובץ שנבחר"
-                }
+            val input = appContext.contentResolver.openInputStream(uri)
 
-                PushbackInputStream(input, 2).use { pushback ->
+            requireNotNull(input) {
+                "לא ניתן לקרוא את הקובץ שנבחר"
+            }
+
+            input.use { sourceInput ->
+                PushbackInputStream(sourceInput, 2).use { pushback ->
+
                     val signature = ByteArray(2)
                     val count = pushback.read(signature)
 
@@ -59,13 +81,15 @@ class TransitDatabase(context: Context) {
                         signature[0] == 0x1f.toByte() &&
                         signature[1] == 0x8b.toByte()
 
-                    val decodedInput =
-                        if (isGzip) GZIPInputStream(pushback)
-                        else pushback
+                    val decodedInput = if (isGzip) {
+                        GZIPInputStream(pushback)
+                    } else {
+                        pushback
+                    }
 
-                    decodedInput.use { source ->
+                    decodedInput.use { decoded ->
                         FileOutputStream(temporaryFile).use { output ->
-                            source.copyTo(output)
+                            decoded.copyTo(output, bufferSize = 1024 * 1024)
                             output.fd.sync()
                         }
                     }
@@ -76,7 +100,9 @@ class TransitDatabase(context: Context) {
 
             backupFile.delete()
 
-            if (databaseFile.exists()) {
+            val hadPreviousDatabase = databaseFile.exists()
+
+            if (hadPreviousDatabase) {
                 check(databaseFile.renameTo(backupFile)) {
                     "לא ניתן ליצור גיבוי של המאגר הקודם"
                 }
@@ -85,7 +111,7 @@ class TransitDatabase(context: Context) {
             val installed = temporaryFile.renameTo(databaseFile)
 
             if (!installed) {
-                if (backupFile.exists()) {
+                if (hadPreviousDatabase && backupFile.exists()) {
                     backupFile.renameTo(databaseFile)
                 }
 
@@ -111,8 +137,92 @@ class TransitDatabase(context: Context) {
         }
     }
 
+    /**
+     * Moves an existing internal database to the selected storage
+     * location when necessary.
+     *
+     * The original internal database is never deleted during migration.
+     */
+    @Synchronized
+    private fun prepareSelectedDatabase(): Boolean {
+        return try {
+            val targetDirectory = databaseDirectory
+
+            if (!targetDirectory.exists() && !targetDirectory.mkdirs()) {
+                return false
+            }
+
+            if (databaseFile.exists()) {
+                return true
+            }
+
+            val internalDirectory = File(
+                appContext.filesDir,
+                "transit"
+            )
+
+            val internalDatabase = File(
+                internalDirectory,
+                DATABASE_NAME
+            )
+
+            val targetCanonical = targetDirectory.canonicalPath
+            val internalCanonical = internalDirectory.canonicalPath
+
+            if (targetCanonical == internalCanonical) {
+                return true
+            }
+
+            if (!internalDatabase.exists()) {
+                return true
+            }
+
+            val migrationFile = File(
+                targetDirectory,
+                "israel-transit.migration"
+            )
+
+            migrationFile.delete()
+
+            copyFile(
+                source = internalDatabase,
+                destination = migrationFile
+            )
+
+            validateDatabase(migrationFile)
+
+            check(migrationFile.renameTo(databaseFile)) {
+                "לא ניתן להעביר את המאגר למיקום האחסון החדש"
+            }
+
+            true
+
+        } catch (_: Exception) {
+            File(databaseDirectory, "israel-transit.migration").delete()
+            false
+        }
+    }
+
+    private fun copyFile(
+        source: File,
+        destination: File
+    ) {
+        FileInputStream(source).use { input ->
+            FileOutputStream(destination).use { output ->
+                input.copyTo(output, bufferSize = 1024 * 1024)
+                output.fd.sync()
+            }
+        }
+    }
+
+    /**
+     * Validates the SQLite header, integrity and required GTFS tables.
+     */
     private fun validateDatabase(file: File) {
-        require(file.exists() && file.length() > 100) {
+        require(
+            file.exists() &&
+            file.length() > MINIMUM_DATABASE_SIZE
+        ) {
             "הקובץ ריק או קטן מדי"
         }
 
@@ -187,6 +297,7 @@ class TransitDatabase(context: Context) {
                     require(cursor.moveToFirst()) {
                         "לא ניתן לבדוק את הטבלה $table"
                     }
+
                     return cursor.getLong(0)
                 }
             }
@@ -253,7 +364,12 @@ class TransitDatabase(context: Context) {
 
     @Synchronized
     fun isDatabaseAvailable(): Boolean {
-        return databaseFile.exists() && databaseFile.length() > 100
+        if (!prepareSelectedDatabase()) {
+            return false
+        }
+
+        return databaseFile.exists() &&
+            databaseFile.length() > MINIMUM_DATABASE_SIZE
     }
 
     @Synchronized
@@ -267,6 +383,10 @@ class TransitDatabase(context: Context) {
 
     @Synchronized
     fun getLastUpdateDate(): Long {
+        if (!prepareSelectedDatabase()) {
+            return 0L
+        }
+
         return if (databaseFile.exists()) {
             databaseFile.lastModified()
         } else {
@@ -276,7 +396,9 @@ class TransitDatabase(context: Context) {
 
     @Synchronized
     fun openReadOnly(): SQLiteDatabase? {
-        if (!isDatabaseAvailable()) return null
+        if (!isDatabaseAvailable()) {
+            return null
+        }
 
         return try {
             SQLiteDatabase.openDatabase(

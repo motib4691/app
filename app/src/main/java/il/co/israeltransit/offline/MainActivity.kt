@@ -84,6 +84,10 @@ fun TransitApp() {
                         onBack = { currentScreen = "home" }
                     )
 
+                    "saved" -> SavedStopsScreen(
+                        onBack = { currentScreen = "home" }
+                    )
+
                     else -> FeatureScreen(
                         screen = currentScreen,
                         onBack = { currentScreen = "home" }
@@ -245,7 +249,6 @@ private fun FeatureScreen(
 ) {
     val title = when (screen) {
         "route" -> "תכנון מסלול"
-        "saved" -> "התחנות שלי"
         else -> "תחבורה ציבורית"
     }
 

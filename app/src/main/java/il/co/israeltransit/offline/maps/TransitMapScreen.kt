@@ -3,19 +3,31 @@ package il.co.israeltransit.offline.maps
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Card
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import org.maplibre.android.maps.MapLibreMap
 import java.io.File
 
-/**
- * Complete offline transit map:
- * - Local PMTiles basemap
- * - Locally imported transit database
- * - Clustered public transport stops
- */
+private const val STOP_LAYER_ID = "transit-stops-individual"
+
+private data class SelectedTransitStop(
+    val id: String,
+    val name: String
+)
+
 @Composable
 fun TransitMapScreen(
     pmtilesFile: File,
@@ -28,10 +40,13 @@ fun TransitMapScreen(
     val context = LocalContext.current
     val appContext = context.applicationContext
 
+    var selectedStop by remember {
+        mutableStateOf<SelectedTransitStop?>(null)
+    }
+
     val mapReadyCallback = remember(
         appContext,
-        pmtilesFile.absolutePath,
-        onError
+        pmtilesFile.absolutePath
     ) {
         { map: MapLibreMap ->
             map.getStyle { style ->
@@ -39,7 +54,48 @@ fun TransitMapScreen(
                     context = appContext,
                     style = style,
                     onComplete = {
-                        // The stop layer is now installed.
+                        val clickListener =
+                            MapLibreMap.OnMapClickListener { coordinate ->
+
+                                val screenPoint =
+                                    map.projection.toScreenLocation(
+                                        coordinate
+                                    )
+
+                                val features =
+                                    map.queryRenderedFeatures(
+                                        screenPoint,
+                                        arrayOf(STOP_LAYER_ID)
+                                    )
+
+                                val feature = features.firstOrNull()
+
+                                if (feature == null) {
+                                    selectedStop = null
+                                    false
+                                } else {
+                                    val stopId =
+                                        feature.getStringProperty("stop_id")
+                                            ?: ""
+
+                                    val stopName =
+                                        feature.getStringProperty("stop_name")
+                                            ?.takeIf { it.isNotBlank() }
+                                            ?: "תחנה ללא שם"
+
+                                    if (stopId.isNotBlank()) {
+                                        selectedStop = SelectedTransitStop(
+                                            id = stopId,
+                                            name = stopName
+                                        )
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                }
+                            }
+
+                        map.addOnMapClickListener(clickListener)
                     },
                     onError = onError
                 )
@@ -47,7 +103,9 @@ fun TransitMapScreen(
         }
     }
 
-    Box(modifier = modifier.fillMaxSize()) {
+    Box(
+        modifier = modifier.fillMaxSize()
+    ) {
         OfflineMapView(
             pmtilesFile = pmtilesFile,
             modifier = Modifier.fillMaxSize(),
@@ -57,5 +115,37 @@ fun TransitMapScreen(
             onMapReady = mapReadyCallback,
             onMapError = onError
         )
+
+        selectedStop?.let { stop ->
+            Card(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(12.dp)
+            ) {
+                androidx.compose.foundation.layout.Column(
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    Text(
+                        text = stop.name,
+                        style = MaterialTheme.typography.titleMedium
+                    )
+
+                    Text(
+                        text = "מספר תחנה: ${stop.id}",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+
+                    TextButton(
+                        onClick = {
+                            selectedStop = null
+                        },
+                        modifier = Modifier.align(Alignment.End)
+                    ) {
+                        Text("סגירה")
+                    }
+                }
+            }
+        }
     }
 }

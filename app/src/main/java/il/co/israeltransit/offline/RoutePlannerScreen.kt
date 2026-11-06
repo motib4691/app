@@ -18,11 +18,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -30,8 +32,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import il.co.israeltransit.offline.database.TransitDatabase
 import il.co.israeltransit.offline.database.TransitRepository
+import il.co.israeltransit.offline.routing.TransitRouteEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import java.time.LocalDateTime
@@ -57,6 +61,7 @@ private fun loadPlannerSavedStops(
         buildList {
             for (index in 0 until array.length()) {
                 val item = array.getJSONObject(index)
+
                 add(
                     PlannerSavedStop(
                         stopId = item.optString("stopId"),
@@ -71,13 +76,31 @@ private fun loadPlannerSavedStops(
     }
 }
 
+private val plannerDateFormatter =
+    DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm")
+
+private val plannerTimeFormatter =
+    DateTimeFormatter.ofPattern("HH:mm")
+
 @Composable
 fun RoutePlannerScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
-    val database = remember(context) { TransitDatabase(context) }
-    val repository = remember(database) { TransitRepository(database) }
+
+    val database = remember(context) {
+        TransitDatabase(context)
+    }
+
+    val repository = remember(database) {
+        TransitRepository(database)
+    }
+
+    val routeEngine = remember(database) {
+        TransitRouteEngine(database)
+    }
+
+    val scope = rememberCoroutineScope()
 
     var originQuery by remember { mutableStateOf("") }
     var destinationQuery by remember { mutableStateOf("") }
@@ -85,6 +108,7 @@ fun RoutePlannerScreen(
     var originResults by remember {
         mutableStateOf(emptyList<TransitRepository.TransitStop>())
     }
+
     var destinationResults by remember {
         mutableStateOf(emptyList<TransitRepository.TransitStop>())
     }
@@ -92,36 +116,50 @@ fun RoutePlannerScreen(
     var selectedOrigin by remember {
         mutableStateOf<TransitRepository.TransitStop?>(null)
     }
+
     var selectedDestination by remember {
         mutableStateOf<TransitRepository.TransitStop?>(null)
     }
 
-    var activeField by remember { mutableStateOf("origin") }
-    var searching by remember { mutableStateOf(false) }
-    var requestSubmitted by remember { mutableStateOf(false) }
+    var activeField by remember {
+        mutableStateOf("origin")
+    }
+
+    var searching by remember {
+        mutableStateOf(false)
+    }
+
+    var calculating by remember {
+        mutableStateOf(false)
+    }
+
+    var routeResult by remember {
+        mutableStateOf<TransitRouteEngine.SearchResult?>(null)
+    }
 
     val savedStops = remember(context) {
         loadPlannerSavedStops(context)
     }
 
     val now = remember {
-        LocalDateTime.now().format(
-            DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm")
-        )
+        LocalDateTime.now()
     }
 
     LaunchedEffect(originQuery, activeField) {
         if (activeField != "origin") return@LaunchedEffect
 
         val value = originQuery.trim()
+
         if (value.isEmpty()) {
             originResults = emptyList()
         } else {
             delay(250)
             searching = true
+
             originResults = withContext(Dispatchers.IO) {
                 repository.searchStops(value, 30)
             }
+
             searching = false
         }
     }
@@ -130,14 +168,17 @@ fun RoutePlannerScreen(
         if (activeField != "destination") return@LaunchedEffect
 
         val value = destinationQuery.trim()
+
         if (value.isEmpty()) {
             destinationResults = emptyList()
         } else {
             delay(250)
             searching = true
+
             destinationResults = withContext(Dispatchers.IO) {
                 repository.searchStops(value, 30)
             }
+
             searching = false
         }
     }
@@ -152,7 +193,33 @@ fun RoutePlannerScreen(
             destinationQuery = stop.name
             destinationResults = emptyList()
         }
-        requestSubmitted = false
+
+        routeResult = null
+    }
+
+    fun searchRoute() {
+        val origin = selectedOrigin ?: return
+        val destination = selectedDestination ?: return
+
+        if (origin.stopId == destination.stopId) return
+
+        calculating = true
+        routeResult = null
+
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                routeEngine.findJourneys(
+                    originStopId = origin.stopId,
+                    destinationStopId = destination.stopId,
+                    departureTime = LocalDateTime.now(),
+                    maxTransfers = 3,
+                    maxResults = 5
+                )
+            }
+
+            routeResult = result
+            calculating = false
+        }
     }
 
     Column(
@@ -162,6 +229,7 @@ fun RoutePlannerScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
@@ -171,6 +239,7 @@ fun RoutePlannerScreen(
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold
             )
+
             OutlinedButton(onClick = onBack) {
                 Text("חזרה")
             }
@@ -182,13 +251,16 @@ fun RoutePlannerScreen(
         )
 
         if (!database.isDatabaseAvailable()) {
+
             Card {
                 Text(
                     "כדי לתכנן מסלול, יש להתקין תחילה את קובץ הנתונים במסך עדכון נתונים.",
                     modifier = Modifier.padding(16.dp)
                 )
             }
+
         } else {
+
             Text(
                 "מוצא",
                 fontWeight = FontWeight.Bold
@@ -200,11 +272,13 @@ fun RoutePlannerScreen(
                     originQuery = it
                     selectedOrigin = null
                     activeField = "origin"
-                    requestSubmitted = false
+                    routeResult = null
                 },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { activeField = "origin" },
+                    .clickable {
+                        activeField = "origin"
+                    },
                 label = { Text("תחנת מוצא") },
                 singleLine = true
             )
@@ -214,12 +288,18 @@ fun RoutePlannerScreen(
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { chooseStop(stop) }
+                            .clickable {
+                                chooseStop(stop)
+                            }
                     ) {
                         Column(
                             modifier = Modifier.padding(12.dp)
                         ) {
-                            Text(stop.name, fontWeight = FontWeight.Bold)
+                            Text(
+                                stop.name,
+                                fontWeight = FontWeight.Bold
+                            )
+
                             Text(
                                 "תחנה ${stop.stopId}",
                                 style = MaterialTheme.typography.bodySmall
@@ -240,7 +320,7 @@ fun RoutePlannerScreen(
                     destinationQuery = it
                     selectedDestination = null
                     activeField = "destination"
-                    requestSubmitted = false
+                    routeResult = null
                 },
                 modifier = Modifier.fillMaxWidth(),
                 label = { Text("תחנת יעד") },
@@ -252,12 +332,18 @@ fun RoutePlannerScreen(
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { chooseStop(stop) }
+                            .clickable {
+                                chooseStop(stop)
+                            }
                     ) {
                         Column(
                             modifier = Modifier.padding(12.dp)
                         ) {
-                            Text(stop.name, fontWeight = FontWeight.Bold)
+                            Text(
+                                stop.name,
+                                fontWeight = FontWeight.Bold
+                            )
+
                             Text(
                                 "תחנה ${stop.stopId}",
                                 style = MaterialTheme.typography.bodySmall
@@ -274,6 +360,7 @@ fun RoutePlannerScreen(
             OutlinedButton(
                 onClick = {
                     val oldOrigin = selectedOrigin
+
                     selectedOrigin = selectedDestination
                     selectedDestination = oldOrigin
 
@@ -282,7 +369,7 @@ fun RoutePlannerScreen(
 
                     originResults = emptyList()
                     destinationResults = emptyList()
-                    requestSubmitted = false
+                    routeResult = null
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -304,6 +391,7 @@ fun RoutePlannerScreen(
                                 latitude = null,
                                 longitude = null
                             )
+
                             chooseStop(stop)
                         },
                         modifier = Modifier.fillMaxWidth()
@@ -326,18 +414,38 @@ fun RoutePlannerScreen(
                 "מועד יציאה",
                 fontWeight = FontWeight.Bold
             )
-            Text("עכשיו — $now")
+
+            Text(
+                "עכשיו — ${now.format(plannerDateFormatter)}"
+            )
 
             Button(
                 onClick = {
-                    requestSubmitted = true
+                    searchRoute()
                 },
                 modifier = Modifier.fillMaxWidth(),
                 enabled = selectedOrigin != null &&
                     selectedDestination != null &&
-                    selectedOrigin?.stopId != selectedDestination?.stopId
+                    selectedOrigin?.stopId != selectedDestination?.stopId &&
+                    !calculating
             ) {
-                Text("חפש מסלול")
+                Text(
+                    if (calculating) "מחשב מסלול..."
+                    else "חפש מסלול"
+                )
+            }
+
+            if (calculating) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    CircularProgressIndicator()
+                }
+
+                Text(
+                    "מחפש נסיעות מתאימות בלוח הזמנים..."
+                )
             }
 
             if (selectedOrigin != null &&
@@ -350,25 +458,109 @@ fun RoutePlannerScreen(
                 )
             }
 
-            if (requestSubmitted) {
-                Card {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
+            routeResult?.let { result ->
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                if (result.error != null) {
+                    Card {
                         Text(
-                            "הבקשה נקלטה",
-                            fontWeight = FontWeight.Bold
+                            result.error,
+                            modifier = Modifier.padding(16.dp),
+                            color = MaterialTheme.colorScheme.error
                         )
+                    }
+                } else if (result.journeys.isEmpty()) {
+                    Card {
                         Text(
-                            "מוצא: ${selectedOrigin?.name} (${selectedOrigin?.stopId})"
+                            "לא נמצאו מסלולים מתאימים.",
+                            modifier = Modifier.padding(16.dp)
                         )
-                        Text(
-                            "יעד: ${selectedDestination?.name} (${selectedDestination?.stopId})"
-                        )
-                        Text(
-                            "בחירת התחנות הושלמה. מנוע חישוב המסלולים עדיין בפיתוח, ולכן עדיין לא מוצגות תוצאות נסיעה."
-                        )
+                    }
+                } else {
+
+                    Text(
+                        "תוצאות חיפוש",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    result.journeys.forEachIndexed { index, journey ->
+
+                        Card(
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+
+                                Text(
+                                    "אפשרות ${index + 1}",
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+
+                                Text(
+                                    "${journey.departureAt.format(plannerTimeFormatter)} – " +
+                                        journey.arrivalAt.format(plannerTimeFormatter),
+                                    style = MaterialTheme.typography.headlineSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+
+                                Text(
+                                    "משך הנסיעה: ${journey.durationMinutes} דקות"
+                                )
+
+                                Text(
+                                    "מספר החלפות: ${journey.transfers}"
+                                )
+
+                                journey.legs.forEachIndexed { legIndex, leg ->
+
+                                    Spacer(
+                                        modifier = Modifier.height(4.dp)
+                                    )
+
+                                    Text(
+                                        "נסיעה ${legIndex + 1}",
+                                        fontWeight = FontWeight.Bold
+                                    )
+
+                                    Text(
+                                        "קו ${leg.lineNumber} — ${leg.agencyName}"
+                                    )
+
+                                    if (leg.lineName.isNotBlank()) {
+                                        Text(leg.lineName)
+                                    }
+
+                                    Text(
+                                        "יציאה: ${leg.departureAt.format(plannerTimeFormatter)}"
+                                    )
+
+                                    Text(
+                                        "מ־${leg.fromStopName} (${leg.fromStopId})"
+                                    )
+
+                                    Text(
+                                        "הגעה: ${leg.arrivalAt.format(plannerTimeFormatter)}"
+                                    )
+
+                                    Text(
+                                        "עד ${leg.toStopName} (${leg.toStopId})"
+                                    )
+
+                                    if (legIndex < journey.legs.lastIndex) {
+                                        Text(
+                                            "החלפה בתחנה זו",
+                                            color = MaterialTheme.colorScheme.primary,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

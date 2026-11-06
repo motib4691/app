@@ -14,8 +14,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
@@ -61,7 +59,9 @@ fun TransitApp() {
         currentScreen = "home"
     }
 
-    CompositionDirection {
+    androidx.compose.runtime.CompositionLocalProvider(
+        LocalLayoutDirection provides LayoutDirection.Rtl
+    ) {
         MaterialTheme(colorScheme = TransitColors) {
             Surface(
                 modifier = Modifier.fillMaxSize(),
@@ -70,6 +70,10 @@ fun TransitApp() {
                 when (currentScreen) {
                     "home" -> HomeScreen(
                         onNavigate = { currentScreen = it }
+                    )
+
+                    "update" -> UpdateDataScreen(
+                        onBack = { currentScreen = "home" }
                     )
 
                     else -> FeatureScreen(
@@ -83,21 +87,35 @@ fun TransitApp() {
 }
 
 @Composable
-private fun CompositionDirection(content: @Composable () -> Unit) {
-    androidx.compose.runtime.CompositionLocalProvider(
-        LocalLayoutDirection provides LayoutDirection.Rtl,
-        content = content
-    )
-}
-
-@Composable
-private fun HomeScreen(onNavigate: (String) -> Unit) {
+private fun HomeScreen(
+    onNavigate: (String) -> Unit
+) {
     val items = listOf(
-        Triple("תכנון מסלול", "מציאת מסלול נסיעה בין שתי נקודות", "route"),
-        Triple("חיפוש קו", "חיפוש קווים לפי מספר ומפעיל", "line"),
-        Triple("חיפוש תחנה", "איתור תחנות וקווים העוברים בהן", "station"),
-        Triple("התחנות שלי", "התחנות ששמרת לשימוש מהיר", "saved"),
-        Triple("עדכון נתונים", "ייבוא ועדכון מאגר התחבורה", "update")
+        Triple(
+            "תכנון מסלול",
+            "מציאת מסלול נסיעה בין שתי נקודות",
+            "route"
+        ),
+        Triple(
+            "חיפוש קו",
+            "חיפוש קווים לפי מספר ומפעיל",
+            "line"
+        ),
+        Triple(
+            "חיפוש תחנה",
+            "איתור תחנות וקווים העוברים בהן",
+            "station"
+        ),
+        Triple(
+            "התחנות שלי",
+            "התחנות ששמרת לשימוש מהיר",
+            "saved"
+        ),
+        Triple(
+            "עדכון נתונים",
+            "ייבוא ועדכון מאגר התחבורה",
+            "update"
+        )
     )
 
     Column(
@@ -185,7 +203,9 @@ private fun HomeMenuItem(
                 )
             }
 
-            Column(modifier = Modifier.weight(1f)) {
+            Column(
+                modifier = Modifier.weight(1f)
+            ) {
                 Text(
                     text = title,
                     fontSize = 18.sp,
@@ -220,7 +240,6 @@ private fun FeatureScreen(
         "line" -> "חיפוש קו"
         "station" -> "חיפוש תחנה"
         "saved" -> "התחנות שלי"
-        "update" -> "עדכון נתונים"
         else -> "תחבורה ציבורית"
     }
 
@@ -240,18 +259,15 @@ private fun FeatureScreen(
         Spacer(modifier = Modifier.height(16.dp))
 
         Text(
-            text = "המסך נוצר. רכיבי הפעולה שלו יתווספו בהמשך הפיתוח.",
+            text = "המסך נמצא בתהליך פיתוח.",
             fontSize = 15.sp,
             color = Color.Gray
         )
 
         Spacer(modifier = Modifier.height(28.dp))
 
-        Button(
-            onClick = onBack,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.primary
-            )
+        androidx.compose.material3.Button(
+            onClick = onBack
         ) {
             Text("חזרה למסך הבית")
         }

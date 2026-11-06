@@ -71,26 +71,23 @@ fun TransitApp() {
                     "home" -> HomeScreen(
                         onNavigate = { currentScreen = it }
                     )
-
                     "update" -> UpdateDataScreen(
                         onBack = { currentScreen = "home" }
                     )
-
                     "line" -> LineSearchScreen(
                         onBack = { currentScreen = "home" }
                     )
-
                     "station" -> StopSearchScreen(
                         onBack = { currentScreen = "home" }
                     )
-
                     "saved" -> SavedStopsScreen(
                         onBack = { currentScreen = "home" }
                     )
-
-                    else -> FeatureScreen(
-                        screen = currentScreen,
+                    "route" -> RoutePlannerScreen(
                         onBack = { currentScreen = "home" }
+                    )
+                    else -> HomeScreen(
+                        onNavigate = { currentScreen = it }
                     )
                 }
             }
@@ -160,7 +157,6 @@ private fun HomeScreen(
                 description = item.second,
                 onClick = { onNavigate(item.third) }
             )
-
             Spacer(modifier = Modifier.height(13.dp))
         }
 
@@ -223,9 +219,7 @@ private fun HomeMenuItem(
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold
                 )
-
                 Spacer(modifier = Modifier.height(4.dp))
-
                 Text(
                     text = description,
                     fontSize = 12.sp,
@@ -238,47 +232,6 @@ private fun HomeMenuItem(
                 fontSize = 27.sp,
                 color = MaterialTheme.colorScheme.primary
             )
-        }
-    }
-}
-
-@Composable
-private fun FeatureScreen(
-    screen: String,
-    onBack: () -> Unit
-) {
-    val title = when (screen) {
-        "route" -> "תכנון מסלול"
-        else -> "תחבורה ציבורית"
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text(
-            text = title,
-            fontSize = 25.sp,
-            fontWeight = FontWeight.Bold
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Text(
-            text = "המסך נמצא בתהליך פיתוח.",
-            fontSize = 15.sp,
-            color = Color.Gray
-        )
-
-        Spacer(modifier = Modifier.height(28.dp))
-
-        androidx.compose.material3.Button(
-            onClick = onBack
-        ) {
-            Text("חזרה למסך הבית")
         }
     }
 }

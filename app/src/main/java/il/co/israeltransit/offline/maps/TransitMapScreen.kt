@@ -2,6 +2,7 @@
 package il.co.israeltransit.offline.maps
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -37,21 +38,21 @@ fun TransitMapScreen(
     initialZoom: Double = 12.0,
     onError: (String) -> Unit = {}
 ) {
-    val context = LocalContext.current
-    val appContext = context.applicationContext
+    val context = LocalContext.current.applicationContext
 
     var selectedStop by remember {
         mutableStateOf<SelectedTransitStop?>(null)
     }
 
     val mapReadyCallback = remember(
-        appContext,
-        pmtilesFile.absolutePath
+        context,
+        pmtilesFile.absolutePath,
+        onError
     ) {
         { map: MapLibreMap ->
             map.getStyle { style ->
                 TransitStopMapLayer.install(
-                    context = appContext,
+                    context = context,
                     style = style,
                     onComplete = {
                         val clickListener =
@@ -65,7 +66,7 @@ fun TransitMapScreen(
                                 val features =
                                     map.queryRenderedFeatures(
                                         screenPoint,
-                                        arrayOf(STOP_LAYER_ID)
+                                        STOP_LAYER_ID
                                     )
 
                                 val feature = features.firstOrNull()
@@ -74,20 +75,30 @@ fun TransitMapScreen(
                                     selectedStop = null
                                     false
                                 } else {
+                                    val properties =
+                                        feature.properties()
+
                                     val stopId =
-                                        feature.getStringProperty("stop_id")
+                                        properties
+                                            ?.get("stop_id")
+                                            ?.takeIf { !it.isJsonNull }
+                                            ?.asString
                                             ?: ""
 
                                     val stopName =
-                                        feature.getStringProperty("stop_name")
+                                        properties
+                                            ?.get("stop_name")
+                                            ?.takeIf { !it.isJsonNull }
+                                            ?.asString
                                             ?.takeIf { it.isNotBlank() }
                                             ?: "תחנה ללא שם"
 
                                     if (stopId.isNotBlank()) {
-                                        selectedStop = SelectedTransitStop(
-                                            id = stopId,
-                                            name = stopName
-                                        )
+                                        selectedStop =
+                                            SelectedTransitStop(
+                                                id = stopId,
+                                                name = stopName
+                                            )
                                         true
                                     } else {
                                         false
@@ -123,7 +134,7 @@ fun TransitMapScreen(
                     .fillMaxWidth()
                     .padding(12.dp)
             ) {
-                androidx.compose.foundation.layout.Column(
+                Column(
                     modifier = Modifier.padding(16.dp)
                 ) {
                     Text(

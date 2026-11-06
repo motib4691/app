@@ -3,6 +3,7 @@ package il.co.israeltransit.offline.database
 
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
+import android.os.StatFs
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -12,131 +13,145 @@ class TransitStorageMigration(context: Context) {
     private val appContext = context.applicationContext
     private val storage = TransitStorage(appContext)
 
-    companion object {
-        private const val DATABASE_NAME = "israel-transit.sqlite"
-        private const val TEMP_NAME = "israel-transit.migration"
-        private const val BACKUP_NAME = "israel-transit.previous"
-    }
-
     data class MigrationResult(
         val success: Boolean,
         val message: String
     )
 
-    /**
-     * Copies the current database to the selected destination.
-     * The source is never deleted.
-     */
+    companion object {
+        private const val DATABASE_NAME = "israel-transit.sqlite"
+        private const val TEMP_NAME = "israel-transit.migration"
+        private const val BACKUP_NAME = "israel-transit.previous"
+        private const val EXTRA_SPACE = 50L * 1024L * 1024L
+    }
+
     @Synchronized
     fun moveTo(locationId: String): MigrationResult {
-        var temporary: File? = null
-        var backup: File? = null
-        var destination: File? = null
+        val locations = storage.availableLocations()
+
+        val sourceLocation = storage.getSelectedLocation()
+            ?: return failure("לא ניתן לזהות את מיקום המאגר הנוכחי")
+
+        val targetLocation = locations.firstOrNull {
+            it.id == locationId
+        } ?: return failure("מיקום האחסון שנבחר אינו זמין")
+
+        val source = File(sourceLocation.directory, DATABASE_NAME)
+        val target = File(targetLocation.directory, DATABASE_NAME)
+        val temporary = File(targetLocation.directory, TEMP_NAME)
+        val backup = File(targetLocation.directory, BACKUP_NAME)
+
+        if (sourceLocation.id == targetLocation.id) {
+            return MigrationResult(true, "המאגר כבר נמצא במיקום שנבחר")
+        }
 
         return try {
-            val locations = storage.availableLocations()
-            val target = locations.firstOrNull {
-                it.id == locationId
-            } ?: return MigrationResult(
-                false,
-                "מיקום האחסון שנבחר אינו זמין"
-            )
-
-            val sourceDirectory = storage.getSelectedDirectory()
-            val source = File(sourceDirectory, DATABASE_NAME)
-
-            destination = File(target.directory, DATABASE_NAME)
-
-            if (source.canonicalPath == destination.canonicalPath) {
-                return MigrationResult(
-                    storage.selectLocation(locationId),
-                    "מיקום האחסון עודכן"
-                )
-            }
-
             if (!source.exists()) {
-                val selected = storage.selectLocation(locationId)
+                if (!target.exists()) {
+                    return failure("לא נמצא מאגר נתונים במיקום הנוכחי או החדש")
+                }
 
-                return MigrationResult(
-                    selected,
-                    if (selected) {
-                        "מיקום האחסון עודכן. עדיין אין מאגר נתונים להעברה."
-                    } else {
-                        "לא ניתן לשמור את בחירת מיקום האחסון"
-                    }
-                )
+                validateDatabase(target)
+
+                check(storage.selectLocation(locationId)) {
+                    "לא ניתן לשמור את מיקום האחסון החדש"
+                }
+
+                return MigrationResult(true, "מיקום האחסון עודכן בהצלחה")
             }
 
-            check(target.directory.exists() || target.directory.mkdirs()) {
-                "לא ניתן ליצור את תיקיית היעד"
+            validateDatabase(source)
+
+            val targetDirectory = targetLocation.directory
+            if (!targetDirectory.exists() && !targetDirectory.mkdirs()) {
+                return failure("לא ניתן ליצור תיקייה במיקום החדש")
             }
 
-            val sourceSize = source.length()
-            val available = target.availableBytes
+            val availableBytes = StatFs(
+                targetDirectory.absolutePath
+            ).availableBytes
 
-            check(available > sourceSize + 50L * 1024L * 1024L) {
-                "אין מספיק מקום פנוי ביעד להעברת המאגר"
+            if (availableBytes < source.length() + EXTRA_SPACE) {
+                return failure("אין מספיק מקום פנוי במיקום החדש")
             }
-
-            temporary = File(target.directory, TEMP_NAME)
-            backup = File(target.directory, BACKUP_NAME)
 
             temporary.delete()
-
-            copyFile(source, temporary)
-
-            check(temporary.length() == source.length()) {
-                "גודל העותק אינו תואם למקור"
-            }
-
-            validateDatabase(temporary)
-
             backup.delete()
 
-            val hadDestination = destination.exists()
+            copyDatabase(source, temporary)
+            validateDatabase(temporary)
 
-            if (hadDestination) {
-                check(destination.renameTo(backup)) {
-                    "לא ניתן לגבות את המאגר הקודם ביעד"
+            check(temporary.length() == source.length()) {
+                "גודל המאגר שהועתק אינו תואם למקור"
+            }
+
+            val hadTarget = target.exists()
+
+            if (hadTarget) {
+                validateDatabase(target)
+
+                check(target.renameTo(backup)) {
+                    "לא ניתן לשמור זמנית את המאגר הקיים במיקום החדש"
                 }
             }
 
-            if (!temporary.renameTo(destination)) {
-                if (hadDestination && backup.exists()) {
-                    backup.renameTo(destination)
+            if (!temporary.renameTo(target)) {
+                if (hadTarget && backup.exists()) {
+                    backup.renameTo(target)
                 }
-
                 error("לא ניתן להתקין את המאגר במיקום החדש")
             }
 
-            val selected = storage.selectLocation(locationId)
+            validateDatabase(target)
 
-            if (!selected) {
-                destination.delete()
+            check(storage.selectLocation(locationId)) {
+                "לא ניתן לבחור את מיקום האחסון החדש"
+            }
 
-                if (hadDestination && backup.exists()) {
-                    backup.renameTo(destination)
+            // Delete the old database only after the new one
+            // has been installed, validated and selected.
+            if (!source.delete() || source.exists()) {
+                storage.selectLocation(sourceLocation.id)
+
+                target.delete()
+
+                if (hadTarget && backup.exists()) {
+                    backup.renameTo(target)
                 }
 
-                error("לא ניתן לשמור את בחירת מיקום האחסון")
+                error("לא ניתן למחוק את המאגר מהמיקום הישן. ההעברה בוטלה.")
             }
+
+            // The old source is gone. Remove any temporary backup.
+            if (backup.exists() && !backup.delete()) {
+                // The active database is already safe at the new location.
+                return MigrationResult(
+                    true,
+                    "המאגר הועבר בהצלחה והמקור נמחק. נותר קובץ גיבוי זמני במיקום החדש."
+                )
+            }
+
+            temporary.delete()
 
             MigrationResult(
                 true,
-                "המאגר הועתק ונבדק בהצלחה. המקור נשמר."
+                "המאגר הועבר בהצלחה. המאגר הישן נמחק ונשאר עותק פעיל אחד בלבד."
             )
 
-        } catch (error: Exception) {
-            temporary?.delete()
+        } catch (e: Exception) {
+            temporary.delete()
 
-            MigrationResult(
-                false,
-                "העברת המאגר נכשלה: ${error.message ?: "שגיאה לא ידועה"}"
+            if (!target.exists() && backup.exists()) {
+                backup.renameTo(target)
+            }
+
+            failure(
+                "העברת המאגר נכשלה: ${e.message ?: "שגיאה לא ידועה"}. המאגר המקורי נשמר."
             )
         }
     }
 
-    private fun copyFile(source: File, destination: File) {
+    private fun copyDatabase(source: File, destination: File) {
         FileInputStream(source).use { input ->
             FileOutputStream(destination).use { output ->
                 input.copyTo(output, bufferSize = 1024 * 1024)
@@ -147,7 +162,7 @@ class TransitStorageMigration(context: Context) {
 
     private fun validateDatabase(file: File) {
         require(file.exists() && file.length() > 100L) {
-            "קובץ המאגר ריק או לא תקין"
+            "קובץ המאגר חסר או קטן מדי"
         }
 
         FileInputStream(file).use { input ->
@@ -162,7 +177,7 @@ class TransitStorageMigration(context: Context) {
             )
 
             require(header.contentEquals(expected)) {
-                "הקובץ אינו מסד נתונים SQLite"
+                "הקובץ אינו מסד נתונים SQLite תקין"
             }
         }
 
@@ -173,8 +188,7 @@ class TransitStorageMigration(context: Context) {
         )
 
         try {
-            database.rawQuery("PRAGMA integrity_check", null).use {
-                cursor ->
+            database.rawQuery("PRAGMA integrity_check", null).use { cursor ->
                 require(cursor.moveToFirst() && cursor.getString(0) == "ok") {
                     "בדיקת תקינות SQLite נכשלה"
                 }
@@ -195,7 +209,8 @@ class TransitStorageMigration(context: Context) {
             for (table in requiredTables) {
                 database.rawQuery(
                     """
-                    SELECT name FROM sqlite_master
+                    SELECT name
+                    FROM sqlite_master
                     WHERE type = 'table' AND name = ?
                     """.trimIndent(),
                     arrayOf(table)
@@ -205,8 +220,42 @@ class TransitStorageMigration(context: Context) {
                     }
                 }
             }
+
+            database.rawQuery(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM trips),
+                    (SELECT COUNT(*) FROM trip_patterns),
+                    (
+                        SELECT COUNT(*)
+                        FROM trips t
+                        LEFT JOIN trip_patterns tp
+                            ON tp.trip_id = t.trip_id
+                        WHERE tp.trip_id IS NULL
+                    )
+                """.trimIndent(),
+                null
+            ).use { cursor ->
+                require(cursor.moveToFirst()) {
+                    "לא ניתן לבדוק את שיוך הנסיעות"
+                }
+
+                require(
+                    cursor.getLong(0) > 0L &&
+                    cursor.getLong(0) == cursor.getLong(1) &&
+                    cursor.getLong(2) == 0L
+                ) {
+                    "שיוך הנסיעות למסלולים אינו תקין"
+                }
+            }
         } finally {
             database.close()
         }
     }
+
+    private fun failure(message: String) =
+        MigrationResult(
+            success = false,
+            message = message
+        )
 }

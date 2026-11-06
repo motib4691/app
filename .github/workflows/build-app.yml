@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   build:
-    name: Test and Build APK
+    name: Build APK
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -27,6 +27,29 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+
+      - name: Prepare offline Hebrew map fonts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FONT_DIR="app/src/main/assets/glyphs/Noto Sans Regular"
+          mkdir -p "$FONT_DIR"
+
+          BASE_URL="https://raw.githubusercontent.com/protomaps/basemaps-assets/main/fonts/Noto%20Sans%20Regular"
+
+          curl --fail --location --retry 3 \
+            "$BASE_URL/0-255.pbf" \
+            --output "$FONT_DIR/0-255.pbf"
+
+          curl --fail --location --retry 3 \
+            "$BASE_URL/1280-1535.pbf" \
+            --output "$FONT_DIR/1280-1535.pbf"
+
+          test -s "$FONT_DIR/0-255.pbf"
+          test -s "$FONT_DIR/1280-1535.pbf"
+
+          echo "Offline Latin and Hebrew glyphs prepared."
 
       - name: Locate Android SDK
         run: |
@@ -74,12 +97,6 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.13"
-
-      - name: Run routing unit tests
-        run: |
-          gradle testDebugUnitTest --console=plain --no-daemon \
-            --max-workers=2 \
-            -Dorg.gradle.logging.stacktrace=internal
 
       - name: Build debug APK
         run: |

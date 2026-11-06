@@ -148,7 +148,8 @@ class TransitRouteEngineTest {
                 CREATE TABLE route_pattern_stops (
                     pattern_id INTEGER,
                     stop_sequence INTEGER,
-                    stop_id TEXT
+                    stop_id TEXT,
+                    PRIMARY KEY (pattern_id, stop_sequence)
                 )
                 """.trimIndent()
             )

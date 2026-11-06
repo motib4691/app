@@ -11,6 +11,13 @@ import java.util.LinkedHashMap
 class TransitRouteEngine(
     private val databaseProvider: TransitDatabase
 ) {
+    companion object {
+        private const val MAX_TRANSFERS = 3
+        private const val MAX_LABELS_PER_STOP_PER_ROUND = 8
+        private const val MAX_CACHED_PATTERN_RUNS = 6
+        private const val MAX_JOURNEY_MINUTES = 720L
+        private const val MINIMUM_TRANSFER_MINUTES = 2L
+    }
 
     data class RouteLeg(
         val tripId: String,
@@ -95,22 +102,6 @@ class TransitRouteEngine(
         "sunday"
     )
 
-    /*
-     * זמן החלפה זמני.
-     * בהמשך יוחלף בחישוב הליכה אמיתי.
-     */
-    private val minimumTransferMinutes = 2L
-
-    /*
-     * הגבלת משך החיפוש ל-12 שעות.
-     */
-    private val maximumJourneyMinutes = 720L
-
-    /*
-     * מטמון מוגבל כדי לצמצם צריכת זיכרון.
-     */
-    private val maximumCachedPatternRuns = 6
-
     private fun weekdayColumn(date: LocalDate): String {
         return weekdayColumns[date.dayOfWeek.value - 1]
     }
@@ -123,7 +114,7 @@ class TransitRouteEngine(
         originStopId: String,
         destinationStopId: String,
         departureTime: LocalDateTime = LocalDateTime.now(),
-        maxTransfers: Int = 3,
+        maxTransfers: Int = MAX_TRANSFERS,
         maxResults: Int = 5
     ): SearchResult {
 
@@ -141,7 +132,7 @@ class TransitRouteEngine(
             )
         }
 
-        if (maxTransfers !in 0..5) {
+        if (maxTransfers < 0) {
             return SearchResult(
                 emptyList(),
                 "מספר ההחלפות המבוקש אינו תקין."
@@ -155,6 +146,10 @@ class TransitRouteEngine(
             )
         }
 
+        // הגבלה קשיחה: לעולם לא מחפשים יותר משלוש החלפות.
+        val effectiveMaxTransfers =
+            maxTransfers.coerceAtMost(MAX_TRANSFERS)
+
         val db = databaseProvider.openReadOnly()
             ?: return SearchResult(
                 emptyList(),
@@ -163,7 +158,6 @@ class TransitRouteEngine(
 
         return try {
             val loaded = loadPatterns(db)
-
             val patternsById = loaded.first
             val positionsByStop = loaded.second
 
@@ -195,10 +189,9 @@ class TransitRouteEngine(
                 originStopId = originStopId,
                 destinationStopId = destinationStopId,
                 departureTime = departureTime,
-                maxTransfers = maxTransfers,
+                maxTransfers = effectiveMaxTransfers,
                 maxResults = maxResults
             )
-
         } catch (e: Exception) {
             SearchResult(
                 emptyList(),
@@ -210,11 +203,6 @@ class TransitRouteEngine(
         }
     }
 
-    /**
-     * טעינת תבניות המסלולים ומיקומי התחנות.
-     *
-     * כל תחנה מקושרת ישירות לתבנית ולמיקום המדויק שלה.
-     */
     private fun loadPatterns(
         db: SQLiteDatabase
     ): Pair<
@@ -233,7 +221,6 @@ class TransitRouteEngine(
             """.trimIndent(),
             null
         ).use { cursor ->
-
             while (cursor.moveToNext()) {
                 routeIds[cursor.getInt(0)] =
                     cursor.getString(1) ?: ""
@@ -248,7 +235,6 @@ class TransitRouteEngine(
             """.trimIndent(),
             null
         ).use { cursor ->
-
             while (cursor.moveToNext()) {
                 val patternId = cursor.getInt(0)
                 val stopId = cursor.getString(1) ?: ""
@@ -260,12 +246,10 @@ class TransitRouteEngine(
         }
 
         val patterns = mutableMapOf<Int, Pattern>()
-
         val positionsByStop =
             mutableMapOf<String, MutableList<BoardPosition>>()
 
         for ((patternId, stopIds) in stopsByPattern) {
-
             if (stopIds.size < 2) continue
 
             val routeId = routeIds[patternId] ?: continue
@@ -277,7 +261,6 @@ class TransitRouteEngine(
             )
 
             stopIds.forEachIndexed { index, stopId ->
-
                 positionsByStop
                     .getOrPut(stopId) { mutableListOf() }
                     .add(
@@ -292,15 +275,6 @@ class TransitRouteEngine(
         return patterns to positionsByStop
     }
 
-    /**
-     * חישוב המסלולים בסבבים.
-     *
-     * סבב ראשון: נסיעה אחת.
-     * סבב שני: שתי נסיעות.
-     * סבב שלישי: שלוש נסיעות.
-     *
-     * בכל סבב נשמרת תווית נפרדת לכל תחנה.
-     */
     private fun calculateJourneys(
         db: SQLiteDatabase,
         patternsById: Map<Int, Pattern>,
@@ -312,20 +286,19 @@ class TransitRouteEngine(
         maxResults: Int
     ): SearchResult {
 
-        var previousRound = mutableMapOf<String, Label>()
+        var previousRound =
+            mutableMapOf<String, MutableList<Label>>()
 
-        previousRound[originStopId] = Label(
-            arrivalAt = departureTime,
-            previous = null,
-            leg = null
+        previousRound[originStopId] = mutableListOf(
+            Label(
+                arrivalAt = departureTime,
+                previous = null,
+                leg = null
+            )
         )
 
         val foundJourneys = mutableListOf<Journey>()
 
-        /*
-         * מטמון LRU מוגבל.
-         * נשמרות בו תוצאות הטעינה האחרונות בלבד.
-         */
         val runsCache =
             object : LinkedHashMap<RunCacheKey, List<TripRun>>(
                 16,
@@ -338,90 +311,127 @@ class TransitRouteEngine(
                         List<TripRun>
                     >?
                 ): Boolean {
-                    return size > maximumCachedPatternRuns
+                    return size > MAX_CACHED_PATTERN_RUNS
                 }
             }
 
+        fun labelSignature(label: Label): String {
+            val parts = mutableListOf<String>()
+            var current: Label? = label
+
+            while (current != null) {
+                val leg = current.leg
+
+                if (leg != null) {
+                    parts.add(
+                        "${leg.tripId}@${leg.departureAt}:" +
+                            "${leg.fromStopId}>${leg.toStopId}"
+                    )
+                }
+
+                current = current.previous
+            }
+
+            return parts.asReversed().joinToString("|")
+        }
+
+        fun addLabel(
+            target: MutableMap<String, MutableList<Label>>,
+            stopId: String,
+            candidate: Label
+        ): Boolean {
+
+            val labels = target.getOrPut(stopId) {
+                mutableListOf()
+            }
+
+            val signature = labelSignature(candidate)
+
+            if (labels.any {
+                    labelSignature(it) == signature
+                }
+            ) {
+                return false
+            }
+
+            labels.add(candidate)
+
+            labels.sortWith(
+                compareBy<Label> { it.arrivalAt }
+                    .thenBy { labelSignature(it) }
+            )
+
+            if (labels.size > MAX_LABELS_PER_STOP_PER_ROUND) {
+                labels.removeAt(labels.lastIndex)
+            }
+
+            return labels.any {
+                labelSignature(it) == signature
+            }
+        }
+
         for (round in 1..(maxTransfers + 1)) {
 
-            val nextRound = mutableMapOf<String, Label>()
+            val nextRound =
+                mutableMapOf<String, MutableList<Label>>()
 
-            /*
-             * קיבוץ כל נקודות העלייה האפשריות לפי תבנית.
-             */
             val boardPositionsByPattern =
                 mutableMapOf<Int, MutableList<BoardingCandidate>>()
 
-            for ((stopId, label) in previousRound) {
-
+            for ((stopId, labels) in previousRound) {
                 val positions = positionsByStop[stopId].orEmpty()
 
-                for (position in positions) {
+                for (label in labels) {
+                    for (position in positions) {
+                        val pattern =
+                            patternsById[position.patternId] ?: continue
 
-                    val pattern =
-                        patternsById[position.patternId] ?: continue
+                        if (position.index >= pattern.stops.lastIndex) {
+                            continue
+                        }
 
-                    if (position.index >= pattern.stops.lastIndex) {
-                        continue
-                    }
+                        if (pattern.stops[position.index] != stopId) {
+                            continue
+                        }
 
-                    /*
-                     * בדיקת התאמה ישירה בין התחנה למיקום בתבנית.
-                     */
-                    if (pattern.stops[position.index] != stopId) {
-                        continue
-                    }
-
-                    boardPositionsByPattern
-                        .getOrPut(position.patternId) { mutableListOf() }
-                        .add(
-                            BoardingCandidate(
-                                index = position.index,
-                                label = label
+                        boardPositionsByPattern
+                            .getOrPut(position.patternId) {
+                                mutableListOf()
+                            }
+                            .add(
+                                BoardingCandidate(
+                                    index = position.index,
+                                    label = label
+                                )
                             )
-                        )
+                    }
                 }
             }
 
             var changed = false
 
-            /*
-             * עוברים רק על תבניות שבהן קיימת תחנה
-             * שניתן להגיע אליה בסבב הקודם.
-             */
             for ((patternId, boardCandidates) in boardPositionsByPattern) {
-
                 val pattern = patternsById[patternId] ?: continue
 
-                /*
-                 * מחשבים את תאריכי השירות הדרושים לתבנית.
-                 * בודקים גם את היום הקודם בגלל נסיעות
-                 * ששעותיהן עוברות את חצות.
-                 */
                 val serviceDates = mutableSetOf<LocalDate>()
 
                 for (candidate in boardCandidates) {
-
                     val requiredBoardingTime =
                         if (candidate.label.leg == null) {
                             candidate.label.arrivalAt
                         } else {
                             candidate.label.arrivalAt.plusMinutes(
-                                minimumTransferMinutes
+                                MINIMUM_TRANSFER_MINUTES
                             )
                         }
 
-                    serviceDates.add(
-                        requiredBoardingTime.toLocalDate()
-                    )
-
+                    serviceDates.add(requiredBoardingTime.toLocalDate())
                     serviceDates.add(
                         requiredBoardingTime.toLocalDate().minusDays(1)
                     )
                 }
 
                 for (serviceDate in serviceDates) {
-
                     val cacheKey = RunCacheKey(
                         patternId = patternId,
                         serviceDate = serviceDate
@@ -436,17 +446,12 @@ class TransitRouteEngine(
                             runsCache[cacheKey] = it
                         }
 
-                    /*
-                     * כל הנסיעות בתבנית ובתאריך השירות נבדקות.
-                     */
                     for (run in runs) {
-
                         if (!matchesPattern(run, pattern)) {
                             continue
                         }
 
                         for (candidate in boardCandidates) {
-
                             val boardIndex = candidate.index
 
                             if (boardIndex >= run.stops.lastIndex) {
@@ -461,7 +466,7 @@ class TransitRouteEngine(
                                     boardLabel.arrivalAt
                                 } else {
                                     boardLabel.arrivalAt.plusMinutes(
-                                        minimumTransferMinutes
+                                        MINIMUM_TRANSFER_MINUTES
                                     )
                                 }
 
@@ -472,18 +477,12 @@ class TransitRouteEngine(
 
                             val actualDepartureAt =
                                 run.serviceDate.atStartOfDay()
-                                    .plusSeconds(
-                                        departureSeconds.toLong()
-                                    )
+                                    .plusSeconds(departureSeconds.toLong())
 
                             if (actualDepartureAt.isBefore(earliestBoarding)) {
                                 continue
                             }
 
-                            /*
-                             * מונעים חזרה על אותה נסיעה
-                             * שכבר מופיעה בשרשרת המסלול.
-                             */
                             if (
                                 containsTripOccurrence(
                                     label = boardLabel,
@@ -494,15 +493,10 @@ class TransitRouteEngine(
                                 continue
                             }
 
-                            /*
-                             * בודקים את כל תחנות הירידה האפשריות
-                             * בהמשך הנסיעה.
-                             */
                             for (
                                 alightIndex in
                                 (boardIndex + 1) until run.stops.size
                             ) {
-
                                 val alightStop = run.stops[alightIndex]
 
                                 val arrivalSeconds =
@@ -512,9 +506,7 @@ class TransitRouteEngine(
 
                                 val arrivalAt =
                                     run.serviceDate.atStartOfDay()
-                                        .plusSeconds(
-                                            arrivalSeconds.toLong()
-                                        )
+                                        .plusSeconds(arrivalSeconds.toLong())
 
                                 if (arrivalAt.isBefore(actualDepartureAt)) {
                                     continue
@@ -527,21 +519,7 @@ class TransitRouteEngine(
 
                                 if (
                                     totalDuration < 0 ||
-                                    totalDuration > maximumJourneyMinutes
-                                ) {
-                                    continue
-                                }
-
-                                val oldLabel =
-                                    nextRound[alightStop.stopId]
-
-                                /*
-                                 * באותו מספר נסיעות נשמרת ההגעה
-                                 * המוקדמת ביותר לכל תחנה.
-                                 */
-                                if (
-                                    oldLabel != null &&
-                                    !arrivalAt.isBefore(oldLabel.arrivalAt)
+                                    totalDuration > MAX_JOURNEY_MINUTES
                                 ) {
                                     continue
                                 }
@@ -561,31 +539,37 @@ class TransitRouteEngine(
                                     arrivalAt = arrivalAt
                                 )
 
-                                nextRound[alightStop.stopId] = Label(
+                                val newLabel = Label(
                                     arrivalAt = arrivalAt,
                                     previous = boardLabel,
                                     leg = leg
                                 )
 
-                                changed = true
+                                if (
+                                    addLabel(
+                                        target = nextRound,
+                                        stopId = alightStop.stopId,
+                                        candidate = newLabel
+                                    )
+                                ) {
+                                    changed = true
+                                }
                             }
                         }
                     }
                 }
             }
 
-            /*
-             * אם היעד הושג בסבב הנוכחי,
-             * שומרים את התוצאה בנפרד מהסבבים האחרים.
-             */
-            val destinationLabel =
-                nextRound[destinationStopId]
+            val destinationLabels =
+                nextRound[destinationStopId].orEmpty()
 
-            if (destinationLabel != null) {
-
+            for (destinationLabel in destinationLabels) {
                 val journey = buildJourney(destinationLabel)
 
-                if (journey.legs.isNotEmpty()) {
+                if (
+                    journey.legs.isNotEmpty() &&
+                    journey.transfers <= MAX_TRANSFERS
+                ) {
                     foundJourneys.add(journey)
                 }
             }
@@ -600,12 +584,15 @@ class TransitRouteEngine(
         val journeys = foundJourneys
             .distinctBy { journey ->
                 journey.legs.joinToString("|") {
-                    "${it.tripId}@${it.departureAt}"
+                    "${it.tripId}@${it.departureAt}:" +
+                        "${it.fromStopId}>${it.toStopId}"
                 }
             }
+            .filter { it.transfers <= MAX_TRANSFERS }
             .sortedWith(
                 compareBy<Journey> { it.arrivalAt }
                     .thenBy { it.transfers }
+                    .thenBy { it.departureAt }
             )
             .take(maxResults)
 
@@ -619,9 +606,6 @@ class TransitRouteEngine(
         }
     }
 
-    /**
-     * בדיקה אם נסיעה מסוימת כבר מופיעה בשרשרת המסלול.
-     */
     private fun containsTripOccurrence(
         label: Label,
         tripId: String,
@@ -631,7 +615,6 @@ class TransitRouteEngine(
         var current: Label? = label
 
         while (current != null) {
-
             val leg = current.leg
 
             if (
@@ -648,9 +631,6 @@ class TransitRouteEngine(
         return false
     }
 
-    /**
-     * בדיקת התאמה מלאה בין נסיעה לתבנית המסלול.
-     */
     private fun matchesPattern(
         run: TripRun,
         pattern: Pattern
@@ -669,13 +649,6 @@ class TransitRouteEngine(
         }
     }
 
-    /**
-     * טעינת כל הנסיעות הפעילות בתבנית מסוימת
-     * ובתאריך שירות מסוים.
-     *
-     * זמני כל התחנות נטענים בשאילתה משולבת אחת,
-     * ולא בשאילתה נפרדת לכל trip.
-     */
     private fun loadPatternRuns(
         db: SQLiteDatabase,
         pattern: Pattern,
@@ -742,11 +715,9 @@ class TransitRouteEngine(
         ).use { cursor ->
 
             while (cursor.moveToNext()) {
-
                 val tripId = cursor.getString(0) ?: continue
 
                 val builder = builders.getOrPut(tripId) {
-
                     RunBuilder(
                         tripId = tripId,
                         routeId = cursor.getString(1) ?: "",
@@ -762,24 +733,17 @@ class TransitRouteEngine(
                         stopId = cursor.getString(6) ?: "",
                         stopName = cursor.getString(7) ?: "",
                         arrivalSeconds =
-                            if (cursor.isNull(8)) {
-                                null
-                            } else {
-                                cursor.getInt(8)
-                            },
+                            if (cursor.isNull(8)) null
+                            else cursor.getInt(8),
                         departureSeconds =
-                            if (cursor.isNull(9)) {
-                                null
-                            } else {
-                                cursor.getInt(9)
-                            }
+                            if (cursor.isNull(9)) null
+                            else cursor.getInt(9)
                     )
                 )
             }
         }
 
         return builders.values.map { builder ->
-
             TripRun(
                 tripId = builder.tripId,
                 routeId = builder.routeId,
@@ -793,15 +757,11 @@ class TransitRouteEngine(
         }
     }
 
-    /**
-     * שחזור המסלול המלא מתוך שרשרת התוויות.
-     */
     private fun buildJourney(
         destinationLabel: Label
     ): Journey {
 
         val legs = mutableListOf<RouteLeg>()
-
         var current: Label? = destinationLabel
 
         while (current != null) {

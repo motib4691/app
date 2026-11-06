@@ -14,11 +14,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -75,9 +75,6 @@ private fun loadPlannerSavedStops(
         emptyList()
     }
 }
-
-private val plannerDateFormatter =
-    DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm")
 
 private val plannerTimeFormatter =
     DateTimeFormatter.ofPattern("HH:mm")
@@ -137,12 +134,12 @@ fun RoutePlannerScreen(
         mutableStateOf<TransitRouteEngine.SearchResult?>(null)
     }
 
-    val savedStops = remember(context) {
-        loadPlannerSavedStops(context)
+    var departureTime by remember {
+        mutableStateOf(LocalDateTime.now())
     }
 
-    val now = remember {
-        LocalDateTime.now()
+    val savedStops = remember(context) {
+        loadPlannerSavedStops(context)
     }
 
     LaunchedEffect(originQuery, activeField) {
@@ -201,7 +198,11 @@ fun RoutePlannerScreen(
         val origin = selectedOrigin ?: return
         val destination = selectedDestination ?: return
 
-        if (origin.stopId == destination.stopId) return
+        if (origin.stopId == destination.stopId || calculating) {
+            return
+        }
+
+        val requestedDepartureTime = departureTime
 
         calculating = true
         routeResult = null
@@ -211,7 +212,7 @@ fun RoutePlannerScreen(
                 routeEngine.findJourneys(
                     originStopId = origin.stopId,
                     destinationStopId = destination.stopId,
-                    departureTime = LocalDateTime.now(),
+                    departureTime = requestedDepartureTime,
                     maxTransfers = 3,
                     maxResults = 5
                 )
@@ -229,7 +230,6 @@ fun RoutePlannerScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
@@ -251,16 +251,13 @@ fun RoutePlannerScreen(
         )
 
         if (!database.isDatabaseAvailable()) {
-
             Card {
                 Text(
                     "כדי לתכנן מסלול, יש להתקין תחילה את קובץ הנתונים במסך עדכון נתונים.",
                     modifier = Modifier.padding(16.dp)
                 )
             }
-
         } else {
-
             Text(
                 "מוצא",
                 fontWeight = FontWeight.Bold
@@ -299,7 +296,6 @@ fun RoutePlannerScreen(
                                 stop.name,
                                 fontWeight = FontWeight.Bold
                             )
-
                             Text(
                                 "תחנה ${stop.stopId}",
                                 style = MaterialTheme.typography.bodySmall
@@ -343,7 +339,6 @@ fun RoutePlannerScreen(
                                 stop.name,
                                 fontWeight = FontWeight.Bold
                             )
-
                             Text(
                                 "תחנה ${stop.stopId}",
                                 style = MaterialTheme.typography.bodySmall
@@ -360,7 +355,6 @@ fun RoutePlannerScreen(
             OutlinedButton(
                 onClick = {
                     val oldOrigin = selectedOrigin
-
                     selectedOrigin = selectedDestination
                     selectedDestination = oldOrigin
 
@@ -410,13 +404,13 @@ fun RoutePlannerScreen(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            Text(
-                "מועד יציאה",
-                fontWeight = FontWeight.Bold
-            )
-
-            Text(
-                "עכשיו — ${now.format(plannerDateFormatter)}"
+            DepartureDateTimePicker(
+                value = departureTime,
+                onValueChange = {
+                    departureTime = it
+                    routeResult = null
+                },
+                modifier = Modifier.fillMaxWidth()
             )
 
             Button(
@@ -443,12 +437,11 @@ fun RoutePlannerScreen(
                     CircularProgressIndicator()
                 }
 
-                Text(
-                    "מחפש נסיעות מתאימות בלוח הזמנים..."
-                )
+                Text("מחפש נסיעות מתאימות בלוח הזמנים...")
             }
 
-            if (selectedOrigin != null &&
+            if (
+                selectedOrigin != null &&
                 selectedDestination != null &&
                 selectedOrigin?.stopId == selectedDestination?.stopId
             ) {
@@ -459,7 +452,6 @@ fun RoutePlannerScreen(
             }
 
             routeResult?.let { result ->
-
                 Spacer(modifier = Modifier.height(8.dp))
 
                 if (result.error != null) {
@@ -478,7 +470,6 @@ fun RoutePlannerScreen(
                         )
                     }
                 } else {
-
                     Text(
                         "תוצאות חיפוש",
                         style = MaterialTheme.typography.titleLarge,
@@ -486,7 +477,6 @@ fun RoutePlannerScreen(
                     )
 
                     result.journeys.forEachIndexed { index, journey ->
-
                         Card(
                             modifier = Modifier.fillMaxWidth()
                         ) {
@@ -494,7 +484,6 @@ fun RoutePlannerScreen(
                                 modifier = Modifier.padding(16.dp),
                                 verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-
                                 Text(
                                     "אפשרות ${index + 1}",
                                     fontWeight = FontWeight.Bold,
@@ -517,7 +506,6 @@ fun RoutePlannerScreen(
                                 )
 
                                 journey.legs.forEachIndexed { legIndex, leg ->
-
                                     Spacer(
                                         modifier = Modifier.height(4.dp)
                                     )

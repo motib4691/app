@@ -7,27 +7,19 @@ import org.json.JSONObject
 import java.io.File
 
 /**
- * Builds the minimal offline map style.
+ * Minimal offline map style.
  *
- * Map data:
- * Protomaps Basemap v4 stored in a local PMTiles archive.
- *
- * Required local font layout:
- * glyphs/{fontstack}/{range}.pbf
- *
- * Visible:
- * - Main roads
- * - Secondary and local roads
- * - Pedestrian paths
- * - Street names
- *
- * Buildings and POIs are intentionally excluded.
+ * PMTiles: loaded from the user's selected storage.
+ * Glyphs: bundled inside the APK assets.
  */
 object OfflineMapStyle {
 
     private const val SOURCE_ID = "israel-roads"
     private const val SOURCE_LAYER = "roads"
     private const val FONT_STACK = "Noto Sans Regular"
+
+    private const val GLYPHS_URL =
+        "asset://glyphs/{fontstack}/{range}.pbf"
 
     fun create(pmtilesFile: File): String {
         require(pmtilesFile.exists() && pmtilesFile.isFile) {
@@ -36,10 +28,6 @@ object OfflineMapStyle {
         require(pmtilesFile.canRead() && pmtilesFile.length() > 0L) {
             "Map archive is empty or unreadable"
         }
-
-        val glyphDirectory = File(pmtilesFile.parentFile, "glyphs")
-        val glyphsUri = Uri.fromFile(glyphDirectory).toString()
-            .trimEnd('/')
 
         val pmtilesUrl =
             "pmtiles://${Uri.fromFile(pmtilesFile)}"
@@ -59,34 +47,34 @@ object OfflineMapStyle {
             .put(backgroundLayer())
             .put(
                 roadLayer(
-                    id = "main-roads",
-                    kind = "highway",
-                    color = "#777777",
-                    width = 2.4
+                    "main-roads",
+                    "highway",
+                    "#777777",
+                    2.4
                 )
             )
             .put(
                 roadLayer(
-                    id = "major-roads",
-                    kind = "major_road",
-                    color = "#858585",
-                    width = 1.9
+                    "major-roads",
+                    "major_road",
+                    "#858585",
+                    1.9
                 )
             )
             .put(
                 roadLayer(
-                    id = "local-roads",
-                    kind = "minor_road",
-                    color = "#999999",
-                    width = 1.35
+                    "local-roads",
+                    "minor_road",
+                    "#999999",
+                    1.35
                 )
             )
             .put(
                 roadLayer(
-                    id = "walking-paths",
-                    kind = "path",
-                    color = "#777777",
-                    width = 1.15
+                    "walking-paths",
+                    "path",
+                    "#777777",
+                    1.15
                 )
             )
             .put(streetLabelsLayer())
@@ -94,7 +82,7 @@ object OfflineMapStyle {
         return JSONObject()
             .put("version", 8)
             .put("name", "Israel Minimal Offline Map")
-            .put("glyphs", "$glyphsUri/{fontstack}/{range}.pbf")
+            .put("glyphs", GLYPHS_URL)
             .put("sources", sources)
             .put("layers", layers)
             .toString()

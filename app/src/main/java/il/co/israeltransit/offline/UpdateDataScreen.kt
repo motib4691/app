@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import il.co.israeltransit.offline.database.TransitDatabase
+import il.co.israeltransit.offline.database.TransitStorage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -42,22 +43,54 @@ fun UpdateDataScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
+
     val database = remember(context) {
         TransitDatabase(context)
     }
+
+    val storage = remember(context) {
+        TransitStorage(context)
+    }
+
     val scope = rememberCoroutineScope()
 
-    var importing by remember { mutableStateOf(false) }
-    var statusMessage by remember {
-        mutableStateOf("בחר קובץ נתונים כדי להתקין או לעדכן את המאגר.")
+    var importing by remember {
+        mutableStateOf(false)
     }
-    var importSucceeded by remember { mutableStateOf(false) }
+
+    var statusMessage by remember {
+        mutableStateOf(
+            "בחר קובץ נתונים כדי להתקין או לעדכן את המאגר."
+        )
+    }
+
+    var importSucceeded by remember {
+        mutableStateOf(false)
+    }
+
     var lastUpdate by remember {
         mutableStateOf(database.getLastUpdateDate())
     }
 
+    var databaseAvailable by remember {
+        mutableStateOf(database.isDatabaseAvailable())
+    }
+
+    var storageLabel by remember {
+        mutableStateOf(storage.getSelectedLocationLabel())
+    }
+
+    var availableSpace by remember {
+        mutableStateOf(
+            storage.getSelectedLocation()?.availableBytes ?: 0L
+        )
+    }
+
     val dateFormatter = remember {
-        SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault())
+        SimpleDateFormat(
+            "dd/MM/yyyy HH:mm",
+            Locale.getDefault()
+        )
     }
 
     val filePicker = rememberLauncherForActivityResult(
@@ -67,17 +100,31 @@ fun UpdateDataScreen(
             scope.launch {
                 importing = true
                 importSucceeded = false
+
                 statusMessage =
-                    "הקובץ נבחר. מתבצע ייבוא ובדיקת תקינות. התהליך עשוי להימשך מספר דקות."
+                    "הקובץ נבחר. מתבצע ייבוא ובדיקת תקינות. " +
+                    "התהליך עשוי להימשך מספר דקות."
 
                 val result = withContext(Dispatchers.IO) {
                     database.importDatabase(uri)
                 }
 
+                databaseAvailable = withContext(Dispatchers.IO) {
+                    database.isDatabaseAvailable()
+                }
+
+                lastUpdate = withContext(Dispatchers.IO) {
+                    database.getLastUpdateDate()
+                }
+
+                storageLabel = storage.getSelectedLocationLabel()
+
+                availableSpace =
+                    storage.getSelectedLocation()?.availableBytes ?: 0L
+
                 importing = false
                 importSucceeded = result.success
                 statusMessage = result.message
-                lastUpdate = database.getLastUpdateDate()
             }
         }
     }
@@ -113,19 +160,52 @@ fun UpdateDataScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(
+                    text = "מיקום אחסון",
+                    fontWeight = FontWeight.Bold
+                )
+
+                Text(
+                    text = storageLabel,
+                    color = MaterialTheme.colorScheme.primary
+                )
+
+                Text(
+                    text = "מקום פנוי: ${formatStorageSize(availableSpace)}"
+                )
+
+                Text(
+                    text = "הנתונים נשמרים בתיקייה הייעודית של האפליקציה."
+                )
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
                     text = "מצב המאגר במכשיר",
                     fontWeight = FontWeight.Bold
                 )
 
-                if (database.isDatabaseAvailable()) {
+                if (databaseAvailable) {
                     Text(
                         text = "מאגר נתונים מותקן",
                         color = MaterialTheme.colorScheme.primary
                     )
-                    Text(
-                        text = "עדכון אחרון: " +
-                            dateFormatter.format(Date(lastUpdate))
-                    )
+
+                    if (lastUpdate > 0L) {
+                        Text(
+                            text = "עדכון אחרון: " +
+                                dateFormatter.format(Date(lastUpdate))
+                        )
+                    }
                 } else {
                     Text("עדיין לא הותקן מאגר נתונים.")
                 }
@@ -134,7 +214,16 @@ fun UpdateDataScreen(
 
         Button(
             onClick = {
-                filePicker.launch(arrayOf("*/*"))
+                filePicker.launch(
+                    arrayOf(
+                        "application/gzip",
+                        "application/x-gzip",
+                        "application/octet-stream",
+                        "application/vnd.sqlite3",
+                        "application/x-sqlite3",
+                        "*/*"
+                    )
+                )
             },
             enabled = !importing,
             modifier = Modifier.fillMaxWidth()
@@ -157,7 +246,9 @@ fun UpdateDataScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     CircularProgressIndicator()
+
                     Text("מייבא נתונים. אין לסגור את האפליקציה.")
+
                     Text(
                         "המאגר גדול, ולכן הפעולה עשויה להימשך זמן רב.",
                         style = MaterialTheme.typography.bodySmall
@@ -191,6 +282,33 @@ fun UpdateDataScreen(
             modifier = Modifier.fillMaxWidth()
         ) {
             Text("חזרה למסך הבית")
+        }
+    }
+}
+
+private fun formatStorageSize(bytes: Long): String {
+    if (bytes <= 0L) {
+        return "לא ידוע"
+    }
+
+    val gigabyte = 1024.0 * 1024.0 * 1024.0
+    val megabyte = 1024.0 * 1024.0
+
+    return when {
+        bytes >= gigabyte -> {
+            String.format(
+                Locale.getDefault(),
+                "%.2f GB",
+                bytes / gigabyte
+            )
+        }
+
+        else -> {
+            String.format(
+                Locale.getDefault(),
+                "%.0f MB",
+                bytes / megabyte
+            )
         }
     }
 }

@@ -6,7 +6,9 @@ import android.os.Bundle
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -14,8 +16,8 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.geometry.LatLng
-import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.MapLibreMap
+import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import java.io.File
 
@@ -29,16 +31,27 @@ fun OfflineMapView(
     onMapReady: ((MapLibreMap) -> Unit)? = null,
     onMapError: ((String) -> Unit)? = null
 ) {
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val context = LocalContext.current.applicationContext
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    val mapView = remember {
+    val currentFile = rememberUpdatedState(pmtilesFile)
+    val currentLatitude = rememberUpdatedState(initialLatitude)
+    val currentLongitude = rememberUpdatedState(initialLongitude)
+    val currentZoom = rememberUpdatedState(initialZoom)
+    val currentOnMapReady = rememberUpdatedState(onMapReady)
+    val currentOnMapError = rememberUpdatedState(onMapError)
+
+    val mapView = remember(
+        context,
+        pmtilesFile.absolutePath
+    ) {
         createMapView(context)
     }
 
     DisposableEffect(mapView, lifecycleOwner) {
         var started = false
         var resumed = false
+        var disposed = false
 
         mapView.onCreate(Bundle())
 
@@ -51,6 +64,7 @@ fun OfflineMapView(
 
         fun resumeMap() {
             startMap()
+
             if (!resumed) {
                 mapView.onResume()
                 resumed = true
@@ -66,6 +80,7 @@ fun OfflineMapView(
 
         fun stopMap() {
             pauseMap()
+
             if (started) {
                 mapView.onStop()
                 started = false
@@ -84,56 +99,55 @@ fun OfflineMapView(
 
         lifecycleOwner.lifecycle.addObserver(observer)
 
-        if (lifecycleOwner.lifecycle.currentState
+        if (
+            lifecycleOwner.lifecycle.currentState
                 .isAtLeast(Lifecycle.State.STARTED)
         ) {
             startMap()
         }
 
-        if (lifecycleOwner.lifecycle.currentState
+        if (
+            lifecycleOwner.lifecycle.currentState
                 .isAtLeast(Lifecycle.State.RESUMED)
         ) {
             resumeMap()
         }
 
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-            stopMap()
-            mapView.onDestroy()
-        }
-    }
+        val file = currentFile.value
 
-    AndroidView(
-        factory = { mapView },
-        modifier = modifier,
-        update = {
-            if (!pmtilesFile.exists() || !pmtilesFile.isFile) {
-                onMapError?.invoke("קובץ המפה אינו נמצא")
-                return@AndroidView
-            }
-
-            if (pmtilesFile.length() <= 0L) {
-                onMapError?.invoke("קובץ המפה ריק")
-                return@AndroidView
-            }
-
+        if (!file.exists() || !file.isFile) {
+            currentOnMapError.value?.invoke(
+                "קובץ המפה אינו נמצא"
+            )
+        } else if (!file.canRead() || file.length() <= 0L) {
+            currentOnMapError.value?.invoke(
+                "קובץ המפה ריק או שאינו ניתן לקריאה"
+            )
+        } else {
             mapView.getMapAsync { map ->
+                if (disposed) {
+                    return@getMapAsync
+                }
+
                 try {
-                    val styleJson =
-                        OfflineMapStyle.create(pmtilesFile)
+                    val styleJson = OfflineMapStyle.create(file)
 
                     map.setStyle(
                         Style.Builder().fromJson(styleJson)
                     ) {
+                        if (disposed) {
+                            return@setStyle
+                        }
+
                         map.cameraPosition =
                             CameraPosition.Builder()
                                 .target(
                                     LatLng(
-                                        initialLatitude,
-                                        initialLongitude
+                                        currentLatitude.value,
+                                        currentLongitude.value
                                     )
                                 )
-                                .zoom(initialZoom)
+                                .zoom(currentZoom.value)
                                 .build()
 
                         map.uiSettings.apply {
@@ -144,15 +158,35 @@ fun OfflineMapView(
                             isScrollGesturesEnabled = true
                         }
 
-                        onMapReady?.invoke(map)
+                        currentOnMapReady.value?.invoke(map)
                     }
                 } catch (exception: Exception) {
-                    onMapError?.invoke(
-                        exception.message
-                            ?: "שגיאה בטעינת המפה"
-                    )
+                    if (!disposed) {
+                        currentOnMapError.value?.invoke(
+                            exception.message
+                                ?: "שגיאה בטעינת המפה"
+                        )
+                    }
                 }
             }
+        }
+
+        onDispose {
+            disposed = true
+
+            lifecycleOwner.lifecycle.removeObserver(observer)
+
+            stopMap()
+            mapView.onDestroy()
+        }
+    }
+
+    AndroidView(
+        factory = { mapView },
+        modifier = modifier,
+        update = {
+            // Map initialization and style loading happen only once
+            // inside DisposableEffect, not during Compose recompositions.
         }
     )
 }

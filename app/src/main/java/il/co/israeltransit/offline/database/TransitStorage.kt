@@ -6,18 +6,12 @@ import android.os.Environment
 import android.os.StatFs
 import java.io.File
 
-/**
- * Manages the app's database storage locations.
- *
- * Supports internal storage and removable app-specific external storage
- * such as an SD card, when the device exposes one.
- */
 class TransitStorage(context: Context) {
 
     private val appContext = context.applicationContext
 
     private val preferences = appContext.getSharedPreferences(
-        PREFERENCES_NAME,
+        "transit_storage",
         Context.MODE_PRIVATE
     )
 
@@ -30,79 +24,62 @@ class TransitStorage(context: Context) {
     )
 
     companion object {
-        private const val PREFERENCES_NAME = "transit_storage"
-        private const val KEY_SELECTED_DIRECTORY = "selected_directory"
         private const val DIRECTORY_NAME = "transit"
+        private const val KEY_SELECTED_DIRECTORY = "selected_directory"
     }
 
-    private fun internalDirectory(): File {
-        return File(appContext.filesDir, DIRECTORY_NAME)
-    }
+    private fun internalDirectory(): File =
+        File(appContext.filesDir, DIRECTORY_NAME)
 
-    /**
-     * Returns all currently available storage locations.
-     * External locations are app-specific directories and do not
-     * require broad external-storage permissions.
-     */
     fun availableLocations(): List<StorageLocation> {
         val locations = mutableListOf<StorageLocation>()
 
         val internal = internalDirectory()
-        if (internal.exists() || internal.mkdirs()) {
+
+        if (!internal.exists()) {
+            internal.mkdirs()
+        }
+
+        if (internal.exists()) {
             locations += createLocation(
-                directory = internal,
-                label = "האחסון הפנימי",
-                removable = false
+                internal,
+                "האחסון הפנימי",
+                false
             )
         }
 
-        val externalRoots = appContext.getExternalFilesDirs(null)
-
-        externalRoots
+        appContext.getExternalFilesDirs(null)
             .filterNotNull()
-            .forEach { appSpecificRoot ->
+            .forEach { root ->
                 try {
-                    val state = Environment.getExternalStorageState(
-                        appSpecificRoot
-                    )
-
-                    if (state != Environment.MEDIA_MOUNTED) {
+                    if (
+                        Environment.getExternalStorageState(root) !=
+                        Environment.MEDIA_MOUNTED
+                    ) {
                         return@forEach
                     }
 
-                    val removable = Environment.isExternalStorageRemovable(
-                        appSpecificRoot
-                    )
-
-                    if (!removable) {
+                    if (!Environment.isExternalStorageRemovable(root)) {
                         return@forEach
                     }
 
-                    val directory = File(
-                        appSpecificRoot,
-                        DIRECTORY_NAME
-                    )
+                    val directory = File(root, DIRECTORY_NAME)
 
                     if (!directory.exists() && !directory.mkdirs()) {
                         return@forEach
                     }
 
-                    val canonicalPath =
-                        directory.canonicalPath
-
-                    if (locations.any {
-                            it.directory.canonicalPath == canonicalPath
-                        }) {
-                        return@forEach
-                    }
-
-                    locations += createLocation(
-                        directory = directory,
-                        label = "כרטיס זיכרון חיצוני",
-                        removable = true
+                    val location = createLocation(
+                        directory,
+                        "כרטיס זיכרון חיצוני",
+                        true
                     )
+
+                    if (locations.none { it.id == location.id }) {
+                        locations += location
+                    }
                 } catch (_: Exception) {
-                    // Ignore unavailable or inaccessible volumes.
+                    // Ignore unavailable storage.
                 }
             }
 
@@ -114,41 +91,40 @@ class TransitStorage(context: Context) {
         label: String,
         removable: Boolean
     ): StorageLocation {
-        val availableBytes = try {
-            StatFs(directory.absolutePath).availableBytes
-        } catch (_: Exception) {
-            0L
-        }
-
-        val canonicalPath = try {
+        val id = try {
             directory.canonicalPath
         } catch (_: Exception) {
             directory.absolutePath
         }
 
+        val available = try {
+            StatFs(directory.absolutePath).availableBytes
+        } catch (_: Exception) {
+            0L
+        }
+
         return StorageLocation(
-            id = canonicalPath,
+            id = id,
             label = label,
             directory = directory,
             removable = removable,
-            availableBytes = availableBytes
+            availableBytes = available
         )
     }
 
     /**
-     * Returns the currently selected directory.
-     * If the selected removable volume is unavailable,
-     * internal storage is used temporarily.
+     * Internal storage is the default.
+     * A saved external selection is used only while available.
      */
     fun getSelectedDirectory(): File {
-        val selectedPath = preferences.getString(
+        val savedId = preferences.getString(
             KEY_SELECTED_DIRECTORY,
             null
         )
 
-        if (selectedPath != null) {
+        if (savedId != null) {
             val selected = availableLocations().firstOrNull {
-                it.id == selectedPath
+                it.id == savedId
             }
 
             if (selected != null) {
@@ -163,45 +139,43 @@ class TransitStorage(context: Context) {
         }
     }
 
+    fun getSelectedLocation(): StorageLocation? {
+        val selectedDirectory = getSelectedDirectory()
+
+        val selectedId = try {
+            selectedDirectory.canonicalPath
+        } catch (_: Exception) {
+            selectedDirectory.absolutePath
+        }
+
+        return availableLocations().firstOrNull {
+            it.id == selectedId
+        }
+    }
+
+    fun getSelectedLocationLabel(): String =
+        getSelectedLocation()?.label ?: "האחסון הפנימי"
+
+    fun isExternalStorageSelected(): Boolean =
+        getSelectedLocation()?.removable == true
+
     /**
-     * Saves a user's storage selection.
-     * The location must currently be available.
+     * Saves an explicit user selection.
+     * No automatic switching or migration is performed here.
      */
     fun selectLocation(locationId: String): Boolean {
         val location = availableLocations().firstOrNull {
             it.id == locationId
         } ?: return false
 
-        if (!location.directory.exists() &&
-            !location.directory.mkdirs()
-        ) {
-            return false
-        }
-
         return preferences.edit()
             .putString(KEY_SELECTED_DIRECTORY, location.id)
             .commit()
     }
 
-    fun getSelectedLocation(): StorageLocation? {
-        val selectedDirectory = getSelectedDirectory()
-
-        return availableLocations().firstOrNull {
-            try {
-                it.directory.canonicalPath ==
-                    selectedDirectory.canonicalPath
-            } catch (_: Exception) {
-                false
-            }
-        }
-    }
-
-    fun getSelectedLocationLabel(): String {
-        return getSelectedLocation()?.label
-            ?: "האחסון הפנימי"
-    }
-
-    fun isExternalStorageSelected(): Boolean {
-        return getSelectedLocation()?.removable == true
+    fun selectInternalStorage(): Boolean {
+        return preferences.edit()
+            .remove(KEY_SELECTED_DIRECTORY)
+            .commit()
     }
 }

@@ -39,7 +39,6 @@ class TransitDatabase(context: Context) {
     fun importDatabase(uri: Uri): ImportResult {
         return try {
             databaseDirectory.mkdirs()
-
             temporaryFile.delete()
 
             appContext.contentResolver.openInputStream(uri).use { input ->
@@ -119,6 +118,7 @@ class TransitDatabase(context: Context) {
 
         FileInputStream(file).use { input ->
             val header = ByteArray(16)
+
             require(input.read(header) == 16) {
                 "קובץ SQLite לא תקין"
             }
@@ -139,7 +139,10 @@ class TransitDatabase(context: Context) {
         )
 
         try {
-            database.rawQuery("PRAGMA integrity_check", null).use { cursor ->
+            database.rawQuery(
+                "PRAGMA integrity_check",
+                null
+            ).use { cursor ->
                 require(cursor.moveToFirst()) {
                     "לא ניתן לבדוק את תקינות המאגר"
                 }
@@ -155,7 +158,10 @@ class TransitDatabase(context: Context) {
                 "trips",
                 "stops",
                 "stop_times",
-                "calendar"
+                "calendar",
+                "route_patterns",
+                "route_pattern_stops",
+                "trip_patterns"
             )
 
             for (table in requiredTables) {
@@ -170,6 +176,73 @@ class TransitDatabase(context: Context) {
                     require(cursor.moveToFirst()) {
                         "חסרה טבלה חיונית: $table"
                     }
+                }
+            }
+
+            fun countRows(table: String): Long {
+                database.rawQuery(
+                    "SELECT COUNT(*) FROM $table",
+                    null
+                ).use { cursor ->
+                    require(cursor.moveToFirst()) {
+                        "לא ניתן לבדוק את הטבלה $table"
+                    }
+                    return cursor.getLong(0)
+                }
+            }
+
+            val tripCount = countRows("trips")
+            val patternCount = countRows("route_patterns")
+            val patternStopCount = countRows("route_pattern_stops")
+            val tripPatternCount = countRows("trip_patterns")
+
+            require(tripCount > 0) {
+                "טבלת הנסיעות ריקה"
+            }
+
+            require(patternCount > 0 && patternStopCount > 0) {
+                "טבלאות המסלולים ריקות"
+            }
+
+            require(tripPatternCount == tripCount) {
+                "מספר שיוכי הנסיעות למסלולים אינו תואם למספר הנסיעות"
+            }
+
+            database.rawQuery(
+                """
+                SELECT COUNT(*)
+                FROM trips t
+                LEFT JOIN trip_patterns tp
+                    ON tp.trip_id = t.trip_id
+                WHERE tp.trip_id IS NULL
+                """.trimIndent(),
+                null
+            ).use { cursor ->
+                require(cursor.moveToFirst()) {
+                    "לא ניתן לבדוק שיוך נסיעות למסלולים"
+                }
+
+                require(cursor.getLong(0) == 0L) {
+                    "קיימות נסיעות ללא שיוך למסלול"
+                }
+            }
+
+            database.rawQuery(
+                """
+                SELECT COUNT(*)
+                FROM trip_patterns tp
+                LEFT JOIN trips t
+                    ON t.trip_id = tp.trip_id
+                WHERE t.trip_id IS NULL
+                """.trimIndent(),
+                null
+            ).use { cursor ->
+                require(cursor.moveToFirst()) {
+                    "לא ניתן לבדוק שיוכי מסלולים"
+                }
+
+                require(cursor.getLong(0) == 0L) {
+                    "נמצאו שיוכי מסלולים ללא נסיעה מקורית"
                 }
             }
 

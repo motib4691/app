@@ -1,4 +1,3 @@
-
 package il.co.israeltransit.offline.maps
 
 import android.content.Context
@@ -28,17 +27,18 @@ import org.maplibre.geojson.Point
 import java.util.concurrent.Executors
 
 /**
- * Offline public transport stop layer.
+ * Loads transit stops from the local SQLite database
+ * and displays them as clustered points on the offline map.
  *
- * Reads stops from the imported SQLite database,
- * prepares clustered GeoJSON in the background,
- * and installs the layers on the main thread.
+ * Database reading and GeoJSON preparation run in the background.
+ * MapLibre style modifications run on the main thread.
  */
 object TransitStopMapLayer {
 
     private const val SOURCE_ID = "transit-stops-source"
     private const val CLUSTER_LAYER_ID = "transit-stops-clusters"
-    private const val CLUSTER_COUNT_LAYER_ID = "transit-stops-cluster-count"
+    private const val CLUSTER_COUNT_LAYER_ID =
+        "transit-stops-cluster-count"
     private const val STOP_LAYER_ID = "transit-stops-individual"
 
     private const val MAX_CLUSTER_ZOOM = 14
@@ -47,11 +47,6 @@ object TransitStopMapLayer {
     private val executor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    /**
-     * Installs the stop source and its three visual layers.
-     *
-     * Call only after the map style has finished loading.
-     */
     fun install(
         context: Context,
         style: Style,
@@ -59,6 +54,12 @@ object TransitStopMapLayer {
         onError: (String) -> Unit = {}
     ) {
         val appContext = context.applicationContext
+
+        // Prevent installing the same source twice.
+        if (style.getSource(SOURCE_ID) != null) {
+            onComplete(0)
+            return
+        }
 
         executor.execute {
             try {
@@ -68,13 +69,15 @@ object TransitStopMapLayer {
                     "לא נמצאו תחנות עם קואורדינטות תקינות במאגר"
                 }
 
-                val collection =
-                    FeatureCollection.fromFeatures(features.toTypedArray())
+                val collection = FeatureCollection.fromFeatures(
+                    features.toTypedArray()
+                )
 
                 mainHandler.post {
                     try {
-                        require(style.getSource(SOURCE_ID) == null) {
-                            "שכבת התחנות כבר קיימת במפה"
+                        if (style.getSource(SOURCE_ID) != null) {
+                            onComplete(features.size)
+                            return@post
                         }
 
                         installLayers(style, collection)
@@ -110,10 +113,10 @@ object TransitStopMapLayer {
             db.rawQuery(
                 """
                 SELECT
-                    stop_id,
+                    stop_id AS stop_id,
                     COALESCE(stop_name, '') AS stop_name,
-                    stop_lat,
-                    stop_lon
+                    stop_lat AS stop_lat,
+                    stop_lon AS stop_lon
                 FROM stops
                 WHERE
                     stop_lat IS NOT NULL
@@ -162,7 +165,8 @@ object TransitStopMapLayer {
                     }
 
                     val stopId =
-                        cursor.getString(stopIdColumn) ?: continue
+                        cursor.getString(stopIdColumn)
+                            ?: continue
 
                     val stopName =
                         cursor.getString(stopNameColumn) ?: ""
@@ -174,7 +178,10 @@ object TransitStopMapLayer {
 
                     features.add(
                         Feature.fromGeometry(
-                            Point.fromLngLat(longitude, latitude),
+                            Point.fromLngLat(
+                                longitude,
+                                latitude
+                            ),
                             properties
                         )
                     )
@@ -189,18 +196,22 @@ object TransitStopMapLayer {
         style: Style,
         collection: FeatureCollection
     ) {
+        check(style.getSource(SOURCE_ID) == null) {
+            "מקור התחנות כבר קיים במפה"
+        }
+
         val options = GeoJsonOptions()
             .withCluster(true)
             .withClusterRadius(CLUSTER_RADIUS)
             .withClusterMaxZoom(MAX_CLUSTER_ZOOM)
 
-        val source = GeoJsonSource(
-            SOURCE_ID,
-            collection,
-            options
+        style.addSource(
+            GeoJsonSource(
+                SOURCE_ID,
+                collection,
+                options
+            )
         )
-
-        style.addSource(source)
 
         val clusterLayer = CircleLayer(
             CLUSTER_LAYER_ID,

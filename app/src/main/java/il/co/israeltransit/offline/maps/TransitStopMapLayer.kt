@@ -7,7 +7,7 @@ import android.os.Handler
 import android.os.Looper
 import com.google.gson.JsonObject
 import il.co.israeltransit.offline.database.TransitDatabase
-import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.style.Style
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.PropertyFactory.circleColor
@@ -22,31 +22,24 @@ import org.maplibre.android.style.layers.PropertyFactory.textSize
 import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.GeoJsonOptions
 import org.maplibre.android.style.sources.GeoJsonSource
-import org.maplibre.android.style.Style
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.Point
 import java.util.concurrent.Executors
 
 /**
- * Loads public transport stops from the imported offline database
- * and installs them as a clustered GeoJSON layer.
+ * Offline public transport stop layer.
  *
- * Database access and GeoJSON preparation run off the main thread.
- * MapLibre style changes are performed on the main thread.
+ * Reads stops from the imported SQLite database,
+ * prepares clustered GeoJSON in the background,
+ * and installs the layers on the main thread.
  */
 object TransitStopMapLayer {
 
     private const val SOURCE_ID = "transit-stops-source"
-
-    private const val CLUSTER_LAYER_ID =
-        "transit-stops-clusters"
-
-    private const val CLUSTER_COUNT_LAYER_ID =
-        "transit-stops-cluster-count"
-
-    private const val STOP_LAYER_ID =
-        "transit-stops-individual"
+    private const val CLUSTER_LAYER_ID = "transit-stops-clusters"
+    private const val CLUSTER_COUNT_LAYER_ID = "transit-stops-cluster-count"
+    private const val STOP_LAYER_ID = "transit-stops-individual"
 
     private const val MAX_CLUSTER_ZOOM = 14
     private const val CLUSTER_RADIUS = 50
@@ -55,8 +48,9 @@ object TransitStopMapLayer {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     /**
-     * Loads all stops with valid coordinates and installs
-     * the clustered layer into an already loaded MapLibre style.
+     * Installs the stop source and its three visual layers.
+     *
+     * Call only after the map style has finished loading.
      */
     fun install(
         context: Context,
@@ -75,12 +69,14 @@ object TransitStopMapLayer {
                 }
 
                 val collection =
-                    FeatureCollection.fromFeatures(
-                        features.toTypedArray()
-                    )
+                    FeatureCollection.fromFeatures(features.toTypedArray())
 
                 mainHandler.post {
                     try {
+                        require(style.getSource(SOURCE_ID) == null) {
+                            "שכבת התחנות כבר קיימת במפה"
+                        }
+
                         installLayers(style, collection)
                         onComplete(features.size)
                     } catch (exception: Exception) {
@@ -115,7 +111,7 @@ object TransitStopMapLayer {
                 """
                 SELECT
                     stop_id,
-                    COALESCE(stop_name, ''),
+                    COALESCE(stop_name, '') AS stop_name,
                     stop_lat,
                     stop_lon
                 FROM stops
@@ -178,10 +174,7 @@ object TransitStopMapLayer {
 
                     features.add(
                         Feature.fromGeometry(
-                            Point.fromLngLat(
-                                longitude,
-                                latitude
-                            ),
+                            Point.fromLngLat(longitude, latitude),
                             properties
                         )
                     )

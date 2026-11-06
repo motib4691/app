@@ -11,7 +11,7 @@ class TransitStorage(context: Context) {
     private val appContext = context.applicationContext
 
     private val preferences = appContext.getSharedPreferences(
-        "transit_storage",
+        PREFERENCES_NAME,
         Context.MODE_PRIVATE
     )
 
@@ -24,8 +24,9 @@ class TransitStorage(context: Context) {
     )
 
     companion object {
-        private const val DIRECTORY_NAME = "transit"
+        private const val PREFERENCES_NAME = "transit_storage"
         private const val KEY_SELECTED_DIRECTORY = "selected_directory"
+        private const val DIRECTORY_NAME = "transit"
     }
 
     private fun internalDirectory(): File =
@@ -33,14 +34,9 @@ class TransitStorage(context: Context) {
 
     fun availableLocations(): List<StorageLocation> {
         val locations = mutableListOf<StorageLocation>()
-
         val internal = internalDirectory()
 
-        if (!internal.exists()) {
-            internal.mkdirs()
-        }
-
-        if (internal.exists()) {
+        if (internal.exists() || internal.mkdirs()) {
             locations += createLocation(
                 internal,
                 "האחסון הפנימי",
@@ -112,24 +108,32 @@ class TransitStorage(context: Context) {
         )
     }
 
-    /**
-     * Internal storage is the default.
-     * A saved external selection is used only while available.
-     */
-    fun getSelectedDirectory(): File {
-        val savedId = preferences.getString(
-            KEY_SELECTED_DIRECTORY,
-            null
-        )
+    fun getConfiguredLocationId(): String? =
+        preferences.getString(KEY_SELECTED_DIRECTORY, null)
 
-        if (savedId != null) {
+    fun hasUnavailableSelectedLocation(): Boolean {
+        val selectedId = getConfiguredLocationId() ?: return false
+
+        return availableLocations().none {
+            it.id == selectedId
+        }
+    }
+
+    fun getSelectedDirectory(): File {
+        val selectedId = getConfiguredLocationId()
+
+        if (selectedId != null) {
             val selected = availableLocations().firstOrNull {
-                it.id == savedId
+                it.id == selectedId
             }
 
             if (selected != null) {
                 return selected.directory
             }
+
+            // Do not silently switch to internal storage if the
+            // selected SD card is temporarily unavailable.
+            return File(selectedId)
         }
 
         return internalDirectory().also {
@@ -140,12 +144,12 @@ class TransitStorage(context: Context) {
     }
 
     fun getSelectedLocation(): StorageLocation? {
-        val selectedDirectory = getSelectedDirectory()
+        val selectedId = getConfiguredLocationId()
 
-        val selectedId = try {
-            selectedDirectory.canonicalPath
-        } catch (_: Exception) {
-            selectedDirectory.absolutePath
+        if (selectedId == null) {
+            return availableLocations().firstOrNull {
+                !it.removable
+            }
         }
 
         return availableLocations().firstOrNull {
@@ -154,15 +158,11 @@ class TransitStorage(context: Context) {
     }
 
     fun getSelectedLocationLabel(): String =
-        getSelectedLocation()?.label ?: "האחסון הפנימי"
+        getSelectedLocation()?.label ?: "מיקום האחסון שנבחר אינו זמין"
 
     fun isExternalStorageSelected(): Boolean =
         getSelectedLocation()?.removable == true
 
-    /**
-     * Saves an explicit user selection.
-     * No automatic switching or migration is performed here.
-     */
     fun selectLocation(locationId: String): Boolean {
         val location = availableLocations().firstOrNull {
             it.id == locationId

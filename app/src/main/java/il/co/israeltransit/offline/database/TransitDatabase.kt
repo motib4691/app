@@ -43,32 +43,23 @@ class TransitDatabase(context: Context) {
         databaseDirectory.mkdirs()
     }
 
-    /**
-     * Imports a SQLite database or a GZIP-compressed SQLite database.
-     *
-     * The new database is first written to a temporary file,
-     * validated, and only then installed.
-     *
-     * The previous database is retained as a backup.
-     */
     @Synchronized
     fun importDatabase(uri: Uri): ImportResult {
         return try {
-            check(databaseDirectory.exists() || databaseDirectory.mkdirs()) {
+            check(
+                databaseDirectory.exists() ||
+                    databaseDirectory.mkdirs()
+            ) {
                 "לא ניתן ליצור את תיקיית מסד הנתונים"
             }
 
             temporaryFile.delete()
 
             val input = appContext.contentResolver.openInputStream(uri)
-
-            requireNotNull(input) {
-                "לא ניתן לקרוא את הקובץ שנבחר"
-            }
+                ?: error("לא ניתן לקרוא את הקובץ שנבחר")
 
             input.use { sourceInput ->
                 PushbackInputStream(sourceInput, 2).use { pushback ->
-
                     val signature = ByteArray(2)
                     val count = pushback.read(signature)
 
@@ -78,8 +69,8 @@ class TransitDatabase(context: Context) {
 
                     val isGzip =
                         count == 2 &&
-                        signature[0] == 0x1f.toByte() &&
-                        signature[1] == 0x8b.toByte()
+                            signature[0] == 0x1f.toByte() &&
+                            signature[1] == 0x8b.toByte()
 
                     val decodedInput = if (isGzip) {
                         GZIPInputStream(pushback)
@@ -108,15 +99,29 @@ class TransitDatabase(context: Context) {
                 }
             }
 
-            val installed = temporaryFile.renameTo(databaseFile)
-
-            if (!installed) {
+            if (!temporaryFile.renameTo(databaseFile)) {
                 if (hadPreviousDatabase && backupFile.exists()) {
                     backupFile.renameTo(databaseFile)
                 }
 
                 error("לא ניתן להתקין את המאגר החדש")
             }
+
+            try {
+                validateDatabase(databaseFile)
+            } catch (e: Exception) {
+                databaseFile.delete()
+
+                if (hadPreviousDatabase && backupFile.exists()) {
+                    backupFile.renameTo(databaseFile)
+                }
+
+                throw e
+            }
+
+            // The new database is valid and installed.
+            // The previous backup is no longer needed.
+            backupFile.delete()
 
             ImportResult(
                 success = true,
@@ -137,91 +142,10 @@ class TransitDatabase(context: Context) {
         }
     }
 
-    /**
-     * Moves an existing internal database to the selected storage
-     * location when necessary.
-     *
-     * The original internal database is never deleted during migration.
-     */
-    @Synchronized
-    private fun prepareSelectedDatabase(): Boolean {
-        return try {
-            val targetDirectory = databaseDirectory
-
-            if (!targetDirectory.exists() && !targetDirectory.mkdirs()) {
-                return false
-            }
-
-            if (databaseFile.exists()) {
-                return true
-            }
-
-            val internalDirectory = File(
-                appContext.filesDir,
-                "transit"
-            )
-
-            val internalDatabase = File(
-                internalDirectory,
-                DATABASE_NAME
-            )
-
-            val targetCanonical = targetDirectory.canonicalPath
-            val internalCanonical = internalDirectory.canonicalPath
-
-            if (targetCanonical == internalCanonical) {
-                return true
-            }
-
-            if (!internalDatabase.exists()) {
-                return true
-            }
-
-            val migrationFile = File(
-                targetDirectory,
-                "israel-transit.migration"
-            )
-
-            migrationFile.delete()
-
-            copyFile(
-                source = internalDatabase,
-                destination = migrationFile
-            )
-
-            validateDatabase(migrationFile)
-
-            check(migrationFile.renameTo(databaseFile)) {
-                "לא ניתן להעביר את המאגר למיקום האחסון החדש"
-            }
-
-            true
-
-        } catch (_: Exception) {
-            File(databaseDirectory, "israel-transit.migration").delete()
-            false
-        }
-    }
-
-    private fun copyFile(
-        source: File,
-        destination: File
-    ) {
-        FileInputStream(source).use { input ->
-            FileOutputStream(destination).use { output ->
-                input.copyTo(output, bufferSize = 1024 * 1024)
-                output.fd.sync()
-            }
-        }
-    }
-
-    /**
-     * Validates the SQLite header, integrity and required GTFS tables.
-     */
     private fun validateDatabase(file: File) {
         require(
             file.exists() &&
-            file.length() > MINIMUM_DATABASE_SIZE
+                file.length() > MINIMUM_DATABASE_SIZE
         ) {
             "הקובץ ריק או קטן מדי"
         }
@@ -253,11 +177,10 @@ class TransitDatabase(context: Context) {
                 "PRAGMA integrity_check",
                 null
             ).use { cursor ->
-                require(cursor.moveToFirst()) {
-                    "לא ניתן לבדוק את תקינות המאגר"
-                }
-
-                require(cursor.getString(0) == "ok") {
+                require(
+                    cursor.moveToFirst() &&
+                        cursor.getString(0) == "ok"
+                ) {
                     "בדיקת תקינות SQLite נכשלה"
                 }
             }
@@ -329,11 +252,7 @@ class TransitDatabase(context: Context) {
                 """.trimIndent(),
                 null
             ).use { cursor ->
-                require(cursor.moveToFirst()) {
-                    "לא ניתן לבדוק שיוך נסיעות למסלולים"
-                }
-
-                require(cursor.getLong(0) == 0L) {
+                require(cursor.moveToFirst() && cursor.getLong(0) == 0L) {
                     "קיימות נסיעות ללא שיוך למסלול"
                 }
             }
@@ -348,11 +267,7 @@ class TransitDatabase(context: Context) {
                 """.trimIndent(),
                 null
             ).use { cursor ->
-                require(cursor.moveToFirst()) {
-                    "לא ניתן לבדוק שיוכי מסלולים"
-                }
-
-                require(cursor.getLong(0) == 0L) {
+                require(cursor.moveToFirst() && cursor.getLong(0) == 0L) {
                     "נמצאו שיוכי מסלולים ללא נסיעה מקורית"
                 }
             }
@@ -364,10 +279,6 @@ class TransitDatabase(context: Context) {
 
     @Synchronized
     fun isDatabaseAvailable(): Boolean {
-        if (!prepareSelectedDatabase()) {
-            return false
-        }
-
         return databaseFile.exists() &&
             databaseFile.length() > MINIMUM_DATABASE_SIZE
     }
@@ -383,11 +294,7 @@ class TransitDatabase(context: Context) {
 
     @Synchronized
     fun getLastUpdateDate(): Long {
-        if (!prepareSelectedDatabase()) {
-            return 0L
-        }
-
-        return if (databaseFile.exists()) {
+        return if (isDatabaseAvailable()) {
             databaseFile.lastModified()
         } else {
             0L

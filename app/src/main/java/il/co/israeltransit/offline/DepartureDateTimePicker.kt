@@ -13,6 +13,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
@@ -32,9 +33,7 @@ fun DepartureDateTimePicker(
 
     Column(
         modifier = modifier,
-        verticalArrangement = Arrangement.spacedBy(
-            androidx.compose.ui.unit.dp(8)
-        )
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Text("מועד יציאה")
 
@@ -45,9 +44,7 @@ fun DepartureDateTimePicker(
 
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(
-                androidx.compose.ui.unit.dp(8)
-            )
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             OutlinedButton(
                 onClick = {

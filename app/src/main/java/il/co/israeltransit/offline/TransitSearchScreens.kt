@@ -1,5 +1,6 @@
 package il.co.israeltransit.offline
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -140,7 +141,9 @@ private class RouteVariantRepository(
 
 @Composable
 fun LineSearchScreen(
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onPlanRouteFrom: ((TransitRepository.TransitStop) -> Unit)? = null,
+    onPlanRouteTo: ((TransitRepository.TransitStop) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val database = remember(context) { TransitDatabase(context) }
@@ -153,6 +156,8 @@ fun LineSearchScreen(
     var variants by remember { mutableStateOf(emptyList<RouteVariant>()) }
     var loading by remember { mutableStateOf(false) }
     var detailLoading by remember { mutableStateOf(false) }
+
+    var clickedStopForAction by remember { mutableStateOf<TransitRepository.RouteStop?>(null) }
 
     LaunchedEffect(query) {
         val value = query.trim()
@@ -179,6 +184,56 @@ fun LineSearchScreen(
         } else {
             variants = emptyList()
         }
+    }
+
+    if (clickedStopForAction != null) {
+        val stop = clickedStopForAction!!
+        val transitStop = TransitRepository.TransitStop(
+            stopId = stop.stopId,
+            name = stop.name,
+            latitude = null,
+            longitude = null
+        )
+
+        AlertDialog(
+            onDismissRequest = { clickedStopForAction = null },
+            title = { Text(stop.name) },
+            text = {
+                Text("מספר תחנה: ${stop.stopId}\nבחר פעולה לתחנה זו במסלול:")
+            },
+            confirmButton = {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (onPlanRouteFrom != null) {
+                        Button(
+                            onClick = {
+                                clickedStopForAction = null
+                                onPlanRouteFrom(transitStop)
+                            }
+                        ) {
+                            Text("מסלול מכאן")
+                        }
+                    }
+
+                    if (onPlanRouteTo != null) {
+                        Button(
+                            onClick = {
+                                clickedStopForAction = null
+                                onPlanRouteTo(transitStop)
+                            }
+                        ) {
+                            Text("מסלול לכאן")
+                        }
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { clickedStopForAction = null }) {
+                    Text("סגירה")
+                }
+            }
+        )
     }
 
     Column(
@@ -242,7 +297,7 @@ fun LineSearchScreen(
                         verticalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
                         Text(
-                            text = "קו ${line.number}",
+                            text = "קו ${line.lineNumber}",
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary
@@ -258,7 +313,7 @@ fun LineSearchScreen(
             }
         } else {
             Text(
-                text = "קו ${selectedLine!!.number}",
+                text = "קו ${selectedLine!!.lineNumber}",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.primary
@@ -272,8 +327,9 @@ fun LineSearchScreen(
                 Text("לא נמצאו מסלולי נסיעה לקו זה.")
             } else {
                 Text(
-                    text = "נמצאו ${variants.size} מסלולי נסיעה שונים",
-                    fontWeight = FontWeight.Bold
+                    text = "נמצאו ${variants.size} מסלולי נסיעה (לחץ על תחנה לתכנון מסלול)",
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.bodyMedium
                 )
 
                 variants.forEachIndexed { index, variant ->
@@ -301,8 +357,12 @@ fun LineSearchScreen(
                             )
                             variant.stops.forEach { stop ->
                                 Text(
-                                    "${stop.sequence}. ${stop.name} (${stop.stopId})",
-                                    style = MaterialTheme.typography.bodyMedium
+                                    text = "${stop.sequence}. ${stop.name} (${stop.stopId})",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { clickedStopForAction = stop }
+                                        .padding(vertical = 4.dp)
                                 )
                             }
                         }
@@ -568,7 +628,7 @@ fun StopSearchScreen(
                                 verticalArrangement = Arrangement.spacedBy(3.dp)
                             ) {
                                 Text(
-                                    "קו ${line.number}",
+                                    "קו ${line.lineNumber}",
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.primary
                                 )

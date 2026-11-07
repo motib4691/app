@@ -39,6 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import il.co.israeltransit.offline.database.TransitRepository
 import il.co.israeltransit.offline.maps.OfflineMapImportScreen
 
 class MainActivity : ComponentActivity() {
@@ -81,9 +82,11 @@ fun TransitApp() {
         )
     }
 
-    var currentScreen by remember {
-        mutableStateOf("home")
-    }
+    var currentScreen by remember { mutableStateOf("home") }
+
+    // מצב ניווט משותף לתכנון מסלול ישירות מתחנה שנבחרה במסכים אחרים
+    var routePlannerInitialOrigin by remember { mutableStateOf<TransitRepository.TransitStop?>(null) }
+    var routePlannerInitialDestination by remember { mutableStateOf<TransitRepository.TransitStop?>(null) }
 
     BackHandler(enabled = currentScreen != "home") {
         currentScreen = "home"
@@ -111,15 +114,41 @@ fun TransitApp() {
                     )
 
                     "station" -> StopSearchScreen(
-                        onBack = { currentScreen = "home" }
+                        onBack = { currentScreen = "home" },
+                        onPlanRouteFrom = { stop ->
+                            routePlannerInitialOrigin = stop
+                            routePlannerInitialDestination = null
+                            currentScreen = "route"
+                        },
+                        onPlanRouteTo = { stop ->
+                            routePlannerInitialOrigin = null
+                            routePlannerInitialDestination = stop
+                            currentScreen = "route"
+                        }
                     )
 
                     "saved" -> SavedStopsScreen(
-                        onBack = { currentScreen = "home" }
+                        onBack = { currentScreen = "home" },
+                        onPlanRouteFrom = { stop ->
+                            routePlannerInitialOrigin = stop
+                            routePlannerInitialDestination = null
+                            currentScreen = "route"
+                        },
+                        onPlanRouteTo = { stop ->
+                            routePlannerInitialOrigin = null
+                            routePlannerInitialDestination = stop
+                            currentScreen = "route"
+                        }
                     )
 
                     "route" -> RoutePlannerScreen(
-                        onBack = { currentScreen = "home" }
+                        onBack = { currentScreen = "home" },
+                        initialOrigin = routePlannerInitialOrigin,
+                        initialDestination = routePlannerInitialDestination,
+                        onClearInitialStops = {
+                            routePlannerInitialOrigin = null
+                            routePlannerInitialDestination = null
+                        }
                     )
 
                     "map" -> OfflineMapImportScreen(

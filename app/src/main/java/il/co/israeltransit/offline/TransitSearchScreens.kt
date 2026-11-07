@@ -1,7 +1,7 @@
-
 package il.co.israeltransit.offline
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -11,25 +11,33 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import il.co.israeltransit.offline.database.TransitDatabase
 import il.co.israeltransit.offline.database.TransitRepository
+import il.co.israeltransit.offline.maps.OfflineMapStorage
+import il.co.israeltransit.offline.maps.OfflineMapView
 import il.co.israeltransit.offline.schedule.TransitScheduleRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -113,16 +121,8 @@ private class RouteVariantRepository(
                             stopId = cursor.getString(3) ?: "",
                             name = cursor.getString(4) ?: "",
                             sequence = cursor.getInt(5),
-                            arrivalTime = if (cursor.isNull(6)) {
-                                null
-                            } else {
-                                cursor.getInt(6)
-                            },
-                            departureTime = if (cursor.isNull(7)) {
-                                null
-                            } else {
-                                cursor.getInt(7)
-                            }
+                            arrivalTime = if (cursor.isNull(6)) null else cursor.getInt(6),
+                            departureTime = if (cursor.isNull(7)) null else cursor.getInt(7)
                         )
                     )
                 }
@@ -144,17 +144,11 @@ fun LineSearchScreen(
     val context = LocalContext.current
     val database = remember(context) { TransitDatabase(context) }
     val repository = remember(database) { TransitRepository(database) }
-    val variantRepository = remember(database) {
-        RouteVariantRepository(database)
-    }
+    val variantRepository = remember(database) { RouteVariantRepository(database) }
 
     var query by remember { mutableStateOf("") }
-    var results by remember {
-        mutableStateOf(emptyList<TransitRepository.TransitLine>())
-    }
-    var selectedLine by remember {
-        mutableStateOf<TransitRepository.TransitLine?>(null)
-    }
+    var results by remember { mutableStateOf(emptyList<TransitRepository.TransitLine>()) }
+    var selectedLine by remember { mutableStateOf<TransitRepository.TransitLine?>(null) }
     var variants by remember { mutableStateOf(emptyList<RouteVariant>()) }
     var loading by remember { mutableStateOf(false) }
     var detailLoading by remember { mutableStateOf(false) }
@@ -195,7 +189,8 @@ fun LineSearchScreen(
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
                 text = if (selectedLine == null) "חיפוש קו" else "מסלולי הקו",
@@ -248,12 +243,14 @@ fun LineSearchScreen(
                         Text(
                             text = "קו ${line.number}",
                             style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
                         )
                         Text(line.name)
                         Text(
                             text = "מפעיל: ${line.agencyName}",
-                            style = MaterialTheme.typography.bodySmall
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
@@ -262,7 +259,8 @@ fun LineSearchScreen(
             Text(
                 text = "קו ${selectedLine!!.number}",
                 style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
             )
             Text("מפעיל: ${selectedLine!!.agencyName}")
             Text(selectedLine!!.name)
@@ -287,7 +285,8 @@ fun LineSearchScreen(
                         ) {
                             Text(
                                 text = "מסלול ${index + 1}",
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
                             )
                             if (variant.headsign.isNotBlank()) {
                                 Text("יעד: ${variant.headsign}")
@@ -315,30 +314,26 @@ fun LineSearchScreen(
 
 @Composable
 fun StopSearchScreen(
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onPlanRouteFrom: ((TransitRepository.TransitStop) -> Unit)? = null,
+    onPlanRouteTo: ((TransitRepository.TransitStop) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val database = remember(context) { TransitDatabase(context) }
     val repository = remember(database) { TransitRepository(database) }
-    val scheduleRepository = remember(database) {
-        TransitScheduleRepository(database)
-    }
+    val scheduleRepository = remember(database) { TransitScheduleRepository(database) }
+    val mapStorage = remember(context) { OfflineMapStorage(context) }
 
     var query by remember { mutableStateOf("") }
-    var results by remember {
-        mutableStateOf(emptyList<TransitRepository.TransitStop>())
-    }
-    var selectedStop by remember {
-        mutableStateOf<TransitRepository.TransitStop?>(null)
-    }
-    var lines by remember {
-        mutableStateOf(emptyList<TransitRepository.TransitLine>())
-    }
-    var departures by remember {
-        mutableStateOf(emptyList<TransitScheduleRepository.Departure>())
-    }
+    var results by remember { mutableStateOf(emptyList<TransitRepository.TransitStop>()) }
+    var selectedStop by remember { mutableStateOf<TransitRepository.TransitStop?>(null) }
+    var lines by remember { mutableStateOf(emptyList<TransitRepository.TransitLine>()) }
+    var departures by remember { mutableStateOf(emptyList<TransitScheduleRepository.Departure>()) }
     var loading by remember { mutableStateOf(false) }
     var detailLoading by remember { mutableStateOf(false) }
+
+    var viewingMapForStop by remember { mutableStateOf<TransitRepository.TransitStop?>(null) }
+    var showMapNotInstalledDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(query) {
         val value = query.trim()
@@ -373,6 +368,81 @@ fun StopSearchScreen(
         }
     }
 
+    // תצוגת מפה ממוקדת על התחנה
+    if (viewingMapForStop != null) {
+        val stop = viewingMapForStop!!
+        val lat = stop.latitude ?: 31.7683
+        val lon = stop.longitude ?: 35.2137
+        val mapFile = mapStorage.getMapFile()
+
+        Column(modifier = Modifier.fillMaxSize()) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surface,
+                shadowElevation = 4.dp
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = stop.name,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp
+                        )
+                        Text(
+                            text = "תחנה ${stop.stopId}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    OutlinedButton(onClick = { viewingMapForStop = null }) {
+                        Text("חזרה לפרטי תחנה")
+                    }
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+            ) {
+                OfflineMapView(
+                    pmtilesFile = mapFile,
+                    modifier = Modifier.fillMaxSize(),
+                    initialLatitude = lat,
+                    initialLongitude = lon,
+                    initialZoom = 16.0
+                )
+            }
+        }
+        return
+    }
+
+    if (showMapNotInstalledDialog) {
+        AlertDialog(
+            onDismissRequest = { showMapNotInstalledDialog = false },
+            title = { Text("מפה לא מותקנת") },
+            text = {
+                Text(
+                    "קובץ המפה לא הותקן עדיין במכשיר.\n\n" +
+                    "כל פרטי התחנה, הקווים והיציאות הקרובות זמינים כאן במלואם.\n\n" +
+                    "כדי לצפות בתחנות על מפה וקטורית, תוכל לייבא קובץ מפה במסך 'מפה לא מקוונת'."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showMapNotInstalledDialog = false }) {
+                    Text("הבנתי")
+                }
+            }
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -382,7 +452,8 @@ fun StopSearchScreen(
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
                 text = if (selectedStop == null) "חיפוש תחנה" else "פרטי תחנה",
@@ -428,29 +499,62 @@ fun StopSearchScreen(
                         modifier = Modifier.padding(14.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Text(
-                            stop.name,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text("מספר תחנה: ${stop.stopId}")
+                        Text(stop.name, fontWeight = FontWeight.Bold)
+                        Text("מספר תחנה: ${stop.stopId}", style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
         } else {
+            val stop = selectedStop!!
             Text(
-                selectedStop!!.name,
+                text = stop.name,
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold
             )
-            Text("מספר תחנה: ${selectedStop!!.stopId}")
+            Text("מספר תחנה: ${stop.stopId}")
+
+            // כפתורי פעולה מהירים: תכנון מסלול ומפה
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (onPlanRouteFrom != null) {
+                    Button(
+                        onClick = { onPlanRouteFrom(stop) },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("מסלול מכאן", fontSize = 13.sp)
+                    }
+                }
+
+                if (onPlanRouteTo != null) {
+                    Button(
+                        onClick = { onPlanRouteTo(stop) },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("מסלול לכאן", fontSize = 13.sp)
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        if (mapStorage.isMapAvailable()) {
+                            viewingMapForStop = stop
+                        } else {
+                            showMapNotInstalledDialog = true
+                        }
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("הצג במפה", fontSize = 13.sp)
+                }
+            }
 
             if (detailLoading) {
                 CircularProgressIndicator()
             } else {
-                Text(
-                    "קווים העוברים בתחנה",
-                    fontWeight = FontWeight.Bold
-                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text("קווים העוברים בתחנה", fontWeight = FontWeight.Bold)
 
                 if (lines.isEmpty()) {
                     Text("לא נמצאו קווים בתחנה זו.")
@@ -465,7 +569,8 @@ fun StopSearchScreen(
                             ) {
                                 Text(
                                     "קו ${line.number}",
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
                                 )
                                 Text(line.name)
                                 Text(
@@ -478,10 +583,7 @@ fun StopSearchScreen(
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    "יציאות קרובות",
-                    fontWeight = FontWeight.Bold
-                )
+                Text("יציאות קרובות", fontWeight = FontWeight.Bold)
 
                 if (departures.isEmpty()) {
                     Text("לא נמצאו יציאות קרובות לפי לוח הזמנים המקומי.")

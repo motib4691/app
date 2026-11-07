@@ -1,4 +1,3 @@
-
 package il.co.israeltransit.offline
 
 import android.content.Context
@@ -31,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import il.co.israeltransit.offline.database.TransitDatabase
 import il.co.israeltransit.offline.database.TransitRepository
 import kotlinx.coroutines.Dispatchers
@@ -94,7 +94,9 @@ private class SavedStopsStorage(context: Context) {
 
 @Composable
 fun SavedStopsScreen(
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onPlanRouteFrom: ((TransitRepository.TransitStop) -> Unit)? = null,
+    onPlanRouteTo: ((TransitRepository.TransitStop) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val database = remember(context) { TransitDatabase(context) }
@@ -108,12 +110,8 @@ fun SavedStopsScreen(
     }
     var searching by remember { mutableStateOf(false) }
 
-    var dialogStop by remember {
-        mutableStateOf<TransitRepository.TransitStop?>(null)
-    }
-    var editingStop by remember {
-        mutableStateOf<SavedStop?>(null)
-    }
+    var dialogStop by remember { mutableStateOf<TransitRepository.TransitStop?>(null) }
+    var editingStop by remember { mutableStateOf<SavedStop?>(null) }
     var customName by remember { mutableStateOf("") }
 
     fun persist(stops: List<SavedStop>) {
@@ -130,11 +128,9 @@ fun SavedStopsScreen(
         } else {
             delay(250)
             searching = true
-
             searchResults = withContext(Dispatchers.IO) {
                 repository.searchStops(value, 50)
             }
-
             searching = false
         }
     }
@@ -150,15 +146,10 @@ fun SavedStopsScreen(
                 editingStop = null
             },
             title = {
-                Text(
-                    if (isEditing) "שינוי שם התחנה"
-                    else "שמירת תחנה"
-                )
+                Text(if (isEditing) "שינוי שם התחנה" else "שמירת תחנה")
             },
             text = {
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(stopName)
                     Text(
                         "מספר תחנה: $stopId",
@@ -176,29 +167,20 @@ fun SavedStopsScreen(
                 TextButton(
                     onClick = {
                         val name = customName.trim()
-
                         if (name.isNotEmpty()) {
                             val updated = if (isEditing) {
                                 savedStops.map {
-                                    if (it.stopId == stopId) {
-                                        it.copy(customName = name)
-                                    } else {
-                                        it
-                                    }
+                                    if (it.stopId == stopId) it.copy(customName = name) else it
                                 }
                             } else {
-                                savedStops.filterNot {
-                                    it.stopId == stopId
-                                } + SavedStop(
+                                savedStops.filterNot { it.stopId == stopId } + SavedStop(
                                     stopId = stopId,
                                     stopName = stopName,
                                     customName = name
                                 )
                             }
-
                             persist(updated)
                         }
-
                         dialogStop = null
                         editingStop = null
                     },
@@ -229,7 +211,8 @@ fun SavedStopsScreen(
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
                 "התחנות שלי",
@@ -242,22 +225,18 @@ fun SavedStopsScreen(
             }
         }
 
-        Text(
-            "שמור תחנות חשובות כדי למצוא אותן במהירות בהמשך."
-        )
+        Text("שמור תחנות חשובות כדי למצוא אותן ולתכנן אליהן מסלולים במהירות.")
 
         OutlinedTextField(
             value = query,
             onValueChange = { query = it },
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("חיפוש תחנה לפי שם או מספר") },
+            label = { Text("חיפוש תחנה לפי שם או מספר להוספה") },
             singleLine = true
         )
 
         if (!database.isDatabaseAvailable()) {
-            Text(
-                "יש להתקין תחילה מאגר נתונים במסך עדכון נתונים."
-            )
+            Text("יש להתקין תחילה מאגר נתונים במסך עדכון נתונים.")
         } else if (searching) {
             CircularProgressIndicator()
         } else if (query.isNotBlank()) {
@@ -266,25 +245,15 @@ fun SavedStopsScreen(
             }
 
             searchResults.forEach { stop ->
-                Card(
-                    modifier = Modifier.fillMaxWidth()
-                ) {
+                Card(modifier = Modifier.fillMaxWidth()) {
                     Column(
                         modifier = Modifier.padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Text(
-                            stop.name,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            "מספר תחנה: ${stop.stopId}",
-                            style = MaterialTheme.typography.bodySmall
-                        )
+                        Text(stop.name, fontWeight = FontWeight.Bold)
+                        Text("מספר תחנה: ${stop.stopId}", style = MaterialTheme.typography.bodySmall)
 
-                        val alreadySaved = savedStops.any {
-                            it.stopId == stop.stopId
-                        }
+                        val alreadySaved = savedStops.any { it.stopId == stop.stopId }
 
                         Button(
                             onClick = {
@@ -293,10 +262,7 @@ fun SavedStopsScreen(
                             },
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text(
-                                if (alreadySaved) "עדכון השם האישי"
-                                else "הוספה לתחנות שלי"
-                            )
+                            Text(if (alreadySaved) "עדכון השם האישי" else "הוספה לתחנות שלי")
                         }
                     }
                 }
@@ -312,15 +278,11 @@ fun SavedStopsScreen(
         )
 
         if (savedStops.isEmpty()) {
-            Text(
-                "עדיין לא שמרת תחנות. חפש תחנה למעלה והוסף אותה לרשימה."
-            )
+            Text("עדיין לא שמרת תחנות. חפש תחנה למעלה והוסף אותה לרשימה.")
         }
 
         savedStops.forEach { stop ->
-            Card(
-                modifier = Modifier.fillMaxWidth()
-            ) {
+            Card(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier.padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -328,15 +290,43 @@ fun SavedStopsScreen(
                     Text(
                         stop.customName,
                         style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
                     )
 
                     Text(stop.stopName)
+                    Text("מספר תחנה: ${stop.stopId}", style = MaterialTheme.typography.bodySmall)
 
-                    Text(
-                        "מספר תחנה: ${stop.stopId}",
-                        style = MaterialTheme.typography.bodySmall
+                    // כפתורי ניתוב מהירים
+                    val transitStop = TransitRepository.TransitStop(
+                        stopId = stop.stopId,
+                        name = stop.stopName,
+                        latitude = null,
+                        longitude = null
                     )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (onPlanRouteFrom != null) {
+                            Button(
+                                onClick = { onPlanRouteFrom(transitStop) },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("מסלול מכאן", fontSize = 13.sp)
+                            }
+                        }
+
+                        if (onPlanRouteTo != null) {
+                            Button(
+                                onClick = { onPlanRouteTo(transitStop) },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("מסלול לכאן", fontSize = 13.sp)
+                            }
+                        }
+                    }
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -354,11 +344,7 @@ fun SavedStopsScreen(
 
                         OutlinedButton(
                             onClick = {
-                                persist(
-                                    savedStops.filterNot {
-                                        it.stopId == stop.stopId
-                                    }
-                                )
+                                persist(savedStops.filterNot { it.stopId == stop.stopId })
                             },
                             modifier = Modifier.weight(1f)
                         ) {

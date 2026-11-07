@@ -514,5 +514,6 @@ object TransitStopMapLayer {
         )
 
         style.addLayer(individualStopsLayer)
+        TransitStopLabelsLayer.install(style)
     }
 }

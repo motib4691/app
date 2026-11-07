@@ -48,6 +48,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
+import java.io.File
 import java.time.Duration
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -124,7 +125,7 @@ fun RoutePlannerScreen(
 
     val savedStops = remember(context) { loadPlannerSavedStops(context) }
 
-    // טעינת תחנה שהועברה ממסך אחר (למשל מחיפוש תחנה או התחנות שלי)
+    // טעינת תחנה שהועברה ממסך אחר
     LaunchedEffect(initialOrigin, initialDestination) {
         if (initialOrigin != null) {
             selectedOrigin = initialOrigin
@@ -222,7 +223,7 @@ fun RoutePlannerScreen(
         val firstLeg = journey.legs.firstOrNull()
         val initialLat = firstLeg?.fromLat ?: 31.7683
         val initialLon = firstLeg?.fromLon ?: 35.2137
-        val mapFile = mapStorage.getMapFile()
+        val mapFile: File = mapStorage.getMapFile()
 
         Column(modifier = Modifier.fillMaxSize()) {
             Surface(
@@ -343,7 +344,6 @@ fun RoutePlannerScreen(
             }
         }
 
-        // פס מידע על הגדרות החיפוש הפעילות
         Surface(
             shape = RoundedCornerShape(8.dp),
             color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
@@ -706,7 +706,7 @@ fun RoutePlannerScreen(
                                                         "הליכה ${distText}(כ-${walkMinutes} דק') מ־${leg.toStopName} ל־${nextLeg.fromStopName}",
                                                         style = MaterialTheme.typography.bodySmall
                                                     )
-                                                    val remainingWait = (waitMinutes - walkMinutes).coerceAtLeast(0)
+                                                    val remainingWait = (waitMinutes - walkMinutes).coerceAtLeast(0L)
                                                     Text(
                                                         "זמן המתנה צפוי לקו ${nextLeg.lineNumber}: כ-${remainingWait} דקות",
                                                         style = MaterialTheme.typography.bodySmall

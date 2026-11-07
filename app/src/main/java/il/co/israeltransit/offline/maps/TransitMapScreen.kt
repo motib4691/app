@@ -1,5 +1,10 @@
 package il.co.israeltransit.offline.maps
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,6 +15,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -23,6 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -45,27 +52,83 @@ fun TransitMapScreen(
     initialZoom: Double = 12.0,
     onError: (String) -> Unit = {}
 ) {
-    val context = LocalContext.current.applicationContext
-    val repository = remember(context) {
-        TransitStopDetailsRepository(context)
+    val context = LocalContext.current
+    val applicationContext = context.applicationContext
+
+    val repository = remember(applicationContext) {
+        TransitStopDetailsRepository(applicationContext)
     }
+
+    val locationControl = remember(applicationContext) {
+        TransitMyLocationControl(applicationContext)
+    }
+
     val coroutineScope = rememberCoroutineScope()
 
     var activeMap by remember {
         mutableStateOf<MapLibreMap?>(null)
     }
+
     var selectedStop by remember {
         mutableStateOf<SelectedTransitStop?>(null)
     }
+
     var selectedLines by remember {
         mutableStateOf<List<TransitStopLine>>(emptyList())
     }
+
     var isLoadingLines by remember {
         mutableStateOf(false)
     }
+
     var linesError by remember {
         mutableStateOf<String?>(null)
     }
+
+    fun moveToLocation() {
+        val map = activeMap
+
+        if (map == null) {
+            Toast.makeText(
+                context,
+                "המפה עדיין נטענת",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+
+        coroutineScope.launch {
+            locationControl.moveToCurrentLocation(map)
+                .onFailure { exception ->
+                    Toast.makeText(
+                        context,
+                        exception.message
+                            ?: "לא ניתן לקבל את מיקום המכשיר",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+        }
+    }
+
+    val locationPermissionLauncher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestMultiplePermissions()
+        ) { permissions ->
+
+            val granted =
+                permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                    permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+
+            if (granted) {
+                moveToLocation()
+            } else {
+                Toast.makeText(
+                    context,
+                    "לא ניתנה הרשאת מיקום. אפשר להמשיך להשתמש באפליקציה כרגיל.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
 
     val mapReadyCallback = remember(
         context,
@@ -77,7 +140,7 @@ fun TransitMapScreen(
 
             map.getStyle { style ->
                 TransitStopMapLayer.install(
-                    context = context,
+                    context = applicationContext,
                     style = style,
                     onComplete = {
                         val clickListener =
@@ -184,6 +247,49 @@ fun TransitMapScreen(
                 .align(Alignment.TopStart)
                 .padding(12.dp)
         )
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(12.dp)
+        ) {
+            FilledTonalButton(
+                onClick = {
+                    if (!locationControl.hasLocationProvider()) {
+                        Toast.makeText(
+                            context,
+                            "לא זמינים במכשיר שירותי מיקום. אפשר להמשיך להשתמש באפליקציה כרגיל.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } else {
+                        val fineGranted =
+                            ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.ACCESS_FINE_LOCATION
+                            ) == PackageManager.PERMISSION_GRANTED
+
+                        val coarseGranted =
+                            ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.ACCESS_COARSE_LOCATION
+                            ) == PackageManager.PERMISSION_GRANTED
+
+                        if (fineGranted || coarseGranted) {
+                            moveToLocation()
+                        } else {
+                            locationPermissionLauncher.launch(
+                                arrayOf(
+                                    Manifest.permission.ACCESS_FINE_LOCATION,
+                                    Manifest.permission.ACCESS_COARSE_LOCATION
+                                )
+                            )
+                        }
+                    }
+                }
+            ) {
+                Text("המיקום שלי")
+            }
+        }
 
         selectedStop?.let { stop ->
             Card(

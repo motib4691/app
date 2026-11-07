@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -26,14 +25,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import il.co.israeltransit.offline.database.TransitRepository
 import il.co.israeltransit.offline.database.TransitStorage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 @Composable
 fun OfflineMapImportScreen(
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onPlanRouteFrom: ((TransitRepository.TransitStop) -> Unit)? = null,
+    onPlanRouteTo: ((TransitRepository.TransitStop) -> Unit)? = null
 ) {
     val context = LocalContext.current
 
@@ -68,7 +71,7 @@ fun OfflineMapImportScreen(
     val unavailableStorage =
         transitStorage.hasUnavailableSelectedLocation()
 
-    val mapFile = remember(refreshVersion) {
+    val mapFile: File = remember(refreshVersion) {
         mapStorage.getMapFile()
     }
 
@@ -112,7 +115,7 @@ fun OfflineMapImportScreen(
 
         Text(
             text = "המפה נשמרת באותו מיקום אחסון שנבחר עבור מאגר התחבורה. " +
-                "לא מתבצעת הורדה מהאינטרנט."
+                "התקנת המפה היא אופציונלית ואינה חובה לשימוש באפליקציה."
         )
 
         Card(
@@ -203,6 +206,8 @@ fun OfflineMapImportScreen(
                 TransitMapScreen(
                     pmtilesFile = mapFile,
                     modifier = Modifier.fillMaxSize(),
+                    onPlanRouteFrom = onPlanRouteFrom,
+                    onPlanRouteTo = onPlanRouteTo,
                     onError = { error ->
                         statusMessage = error
                         succeeded = false
@@ -223,7 +228,6 @@ fun OfflineMapImportScreen(
 
 private fun formatMapSize(bytes: Long): String {
     val mb = bytes / (1024.0 * 1024.0)
-
     return String.format(
         java.util.Locale.getDefault(),
         "%.1f MB",

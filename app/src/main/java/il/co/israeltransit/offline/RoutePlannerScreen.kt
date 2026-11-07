@@ -1,5 +1,10 @@
 package il.co.israeltransit.offline
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -38,10 +43,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import il.co.israeltransit.offline.database.TransitDatabase
 import il.co.israeltransit.offline.database.TransitRepository
 import il.co.israeltransit.offline.maps.OfflineMapStorage
 import il.co.israeltransit.offline.maps.OfflineMapView
+import il.co.israeltransit.offline.maps.TransitMyLocationControl
 import il.co.israeltransit.offline.routing.TransitRouteEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -101,6 +108,7 @@ fun RoutePlannerScreen(
     val routeEngine = remember(database) { TransitRouteEngine(database) }
     val mapStorage = remember(context) { OfflineMapStorage(context) }
     val settings = remember(context) { TransitSettings(context) }
+    val locationControl = remember(context) { TransitMyLocationControl(context) }
 
     val scope = rememberCoroutineScope()
 
@@ -116,6 +124,7 @@ fun RoutePlannerScreen(
     var activeField by remember { mutableStateOf("origin") }
     var searching by remember { mutableStateOf(false) }
     var calculating by remember { mutableStateOf(false) }
+    var detectingLocation by remember { mutableStateOf(false) }
 
     var routeResult by remember { mutableStateOf<TransitRouteEngine.SearchResult?>(null) }
     var departureTime by remember { mutableStateOf(LocalDateTime.now()) }
@@ -125,7 +134,62 @@ fun RoutePlannerScreen(
 
     val savedStops = remember(context) { loadPlannerSavedStops(context) }
 
-    // טעינת תחנה שהועברה ממסך אחר
+    fun findAndSetNearestStopFromGPS() {
+        detectingLocation = true
+        scope.launch {
+            val locationResult = locationControl.getCurrentLocation()
+            detectingLocation = false
+
+            locationResult.onSuccess { loc ->
+                val nearest = withContext(Dispatchers.IO) {
+                    repository.findNearestStop(loc.latitude, loc.longitude)
+                }
+
+                if (nearest != null) {
+                    selectedOrigin = nearest
+                    originQuery = nearest.name
+                    originResults = emptyList()
+                    activeField = "destination"
+                    routeResult = null
+                    Toast.makeText(
+                        context,
+                        "נבחרה התחנה הקרובה אליך: ${nearest.name}",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    Toast.makeText(
+                        context,
+                        "לא נמצאו תחנות בקרבת מיקומך.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }.onFailure {
+                Toast.makeText(
+                    context,
+                    "לא ניתן לקבל מיקום כעת. אפשר לבחור תחנה ידנית.",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
+
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val granted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+
+        if (granted) {
+            findAndSetNearestStopFromGPS()
+        } else {
+            Toast.makeText(
+                context,
+                "לא ניתנה הרשאת מיקום. באפשרותך לבחור תחנה ידנית.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
     LaunchedEffect(initialOrigin, initialDestination) {
         if (initialOrigin != null) {
             selectedOrigin = initialOrigin
@@ -217,7 +281,6 @@ fun RoutePlannerScreen(
         }
     }
 
-    // תצוגת מפה ממוקדת על מסלול (אם נבחרה אפשרות זו)
     if (journeyForMap != null) {
         val journey = journeyForMap!!
         val firstLeg = journey.legs.firstOrNull()
@@ -384,7 +447,44 @@ fun RoutePlannerScreen(
                 )
             }
         } else {
-            Text("מוצא", fontWeight = FontWeight.Bold)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("מוצא", fontWeight = FontWeight.Bold)
+
+                OutlinedButton(
+                    onClick = {
+                        val fineGranted = ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.ACCESS_FINE_LOCATION
+                        ) == PackageManager.PERMISSION_GRANTED
+                        val coarseGranted = ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.ACCESS_COARSE_LOCATION
+                        ) == PackageManager.PERMISSION_GRANTED
+
+                        if (fineGranted || coarseGranted) {
+                            findAndSetNearestStopFromGPS()
+                        } else {
+                            locationPermissionLauncher.launch(
+                                arrayOf(
+                                    Manifest.permission.ACCESS_FINE_LOCATION,
+                                    Manifest.permission.ACCESS_COARSE_LOCATION
+                                )
+                            )
+                        }
+                    },
+                    enabled = !detectingLocation
+                ) {
+                    Text(
+                        if (detectingLocation) "מאתר תחנה..."
+                        else "המיקום שלי",
+                        fontSize = 12.sp
+                    )
+                }
+            }
 
             OutlinedTextField(
                 value = originQuery,
@@ -664,7 +764,6 @@ fun RoutePlannerScreen(
                                         }
                                     }
 
-                                    // פירוט הליכה והמתנה בין נסיעות
                                     if (legIndex < journey.legs.lastIndex) {
                                         val nextLeg = journey.legs[legIndex + 1]
                                         val waitMinutes = Duration.between(leg.arrivalAt, nextLeg.departureAt).toMinutes()

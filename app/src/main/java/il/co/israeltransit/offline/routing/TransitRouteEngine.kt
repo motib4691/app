@@ -1,4 +1,3 @@
-
 package il.co.israeltransit.offline.routing
 
 import android.database.sqlite.SQLiteDatabase
@@ -7,16 +6,47 @@ import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.util.LinkedHashMap
+import kotlin.math.atan2
+import kotlin.math.ceil
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 class TransitRouteEngine(
     private val databaseProvider: TransitDatabase
 ) {
     companion object {
-        private const val MAX_TRANSFERS = 3
+        const val MAX_ALLOWED_TRANSFERS = 5
         private const val MAX_LABELS_PER_STOP_PER_ROUND = 8
         private const val MAX_CACHED_PATTERN_RUNS = 6
         private const val MAX_JOURNEY_MINUTES = 720L
-        private const val MINIMUM_TRANSFER_MINUTES = 2L
+        const val DEFAULT_MINIMUM_TRANSFER_MINUTES = 2L
+
+        /**
+         * חישוב מרחק אווירי במטרים בין שתי נקודות גאוגרפיות
+         */
+        fun calculateDistanceMeters(
+            lat1: Double?, lon1: Double?,
+            lat2: Double?, lon2: Double?
+        ): Double? {
+            if (lat1 == null || lon1 == null || lat2 == null || lon2 == null) return null
+            val earthRadius = 6371000.0
+            val dLat = Math.toRadians(lat2 - lat1)
+            val dLon = Math.toRadians(lon2 - lon1)
+            val a = sin(dLat / 2).let { it * it } +
+                    cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) *
+                    sin(dLon / 2).let { it * it }
+            val c = 2.0 * atan2(sqrt(a), sqrt(1.0 - a))
+            return earthRadius * c
+        }
+
+        /**
+         * הערכת זמן הליכה בדקות לפי קצב הליכה ממוצע (כ-70 מטרים לדקה)
+         */
+        fun estimateWalkingMinutes(distanceMeters: Double?): Long {
+            if (distanceMeters == null || distanceMeters <= 0.0) return 0L
+            return ceil(distanceMeters / 70.0).toLong().coerceAtLeast(1L)
+        }
     }
 
     data class RouteLeg(
@@ -28,8 +58,12 @@ class TransitRouteEngine(
         val headsign: String,
         val fromStopId: String,
         val fromStopName: String,
+        val fromLat: Double? = null,
+        val fromLon: Double? = null,
         val toStopId: String,
         val toStopName: String,
+        val toLat: Double? = null,
+        val toLon: Double? = null,
         val departureAt: LocalDateTime,
         val arrivalAt: LocalDateTime
     )
@@ -67,7 +101,9 @@ class TransitRouteEngine(
         val stopId: String,
         val stopName: String,
         val arrivalSeconds: Int?,
-        val departureSeconds: Int?
+        val departureSeconds: Int?,
+        val latitude: Double? = null,
+        val longitude: Double? = null
     )
 
     private data class TripRun(
@@ -114,7 +150,8 @@ class TransitRouteEngine(
         originStopId: String,
         destinationStopId: String,
         departureTime: LocalDateTime = LocalDateTime.now(),
-        maxTransfers: Int = MAX_TRANSFERS,
+        maxTransfers: Int = 3,
+        minimumTransferMinutes: Long = DEFAULT_MINIMUM_TRANSFER_MINUTES,
         maxResults: Int = 5
     ): SearchResult {
 
@@ -132,10 +169,10 @@ class TransitRouteEngine(
             )
         }
 
-        if (maxTransfers < 0) {
+        if (maxTransfers !in 0..MAX_ALLOWED_TRANSFERS) {
             return SearchResult(
                 emptyList(),
-                "מספר ההחלפות המבוקש אינו תקין."
+                "מספר ההחלפות המבוקש אינו תקין (0 עד $MAX_ALLOWED_TRANSFERS)."
             )
         }
 
@@ -146,14 +183,13 @@ class TransitRouteEngine(
             )
         }
 
-        // הגבלה קשיחה: לעולם לא מחפשים יותר משלוש החלפות.
-        val effectiveMaxTransfers =
-            maxTransfers.coerceAtMost(MAX_TRANSFERS)
+        val effectiveMaxTransfers = maxTransfers.coerceIn(0, MAX_ALLOWED_TRANSFERS)
+        val effectiveBufferMinutes = minimumTransferMinutes.coerceAtLeast(1L)
 
         val db = databaseProvider.openReadOnly()
             ?: return SearchResult(
                 emptyList(),
-                "לא נמצא מסד נתונים. יש לייבא תחילה את קובץ הנתונים."
+                "לא נמצא מסד נתונים. יש לייבא תחילה את קובץ הנתונים במסך עדכון נתונים."
             )
 
         return try {
@@ -164,7 +200,7 @@ class TransitRouteEngine(
             if (patternsById.isEmpty()) {
                 return SearchResult(
                     emptyList(),
-                    "לא נמצאו נתוני מסלולים. יש לייבא קובץ נתונים מעודכן."
+                    "לא נמצאו נתוני מסלולים במאגר. יש לייבא קובץ נתונים תקין."
                 )
             }
 
@@ -190,13 +226,13 @@ class TransitRouteEngine(
                 destinationStopId = destinationStopId,
                 departureTime = departureTime,
                 maxTransfers = effectiveMaxTransfers,
+                minimumTransferMinutes = effectiveBufferMinutes,
                 maxResults = maxResults
             )
         } catch (e: Exception) {
             SearchResult(
                 emptyList(),
-                "אירעה שגיאה בחישוב המסלול: " +
-                    (e.message ?: "שגיאה לא ידועה")
+                "אירעה שגיאה בחישוב המסלול: " + (e.message ?: "שגיאה לא ידועה")
             )
         } finally {
             db.close()
@@ -205,14 +241,10 @@ class TransitRouteEngine(
 
     private fun loadPatterns(
         db: SQLiteDatabase
-    ): Pair<
-        Map<Int, Pattern>,
-        Map<String, List<BoardPosition>>
-    > {
+    ): Pair<Map<Int, Pattern>, Map<String, List<BoardPosition>>> {
 
         val routeIds = mutableMapOf<Int, String>()
-        val stopsByPattern =
-            mutableMapOf<Int, MutableList<String>>()
+        val stopsByPattern = mutableMapOf<Int, MutableList<String>>()
 
         db.rawQuery(
             """
@@ -222,8 +254,7 @@ class TransitRouteEngine(
             null
         ).use { cursor ->
             while (cursor.moveToNext()) {
-                routeIds[cursor.getInt(0)] =
-                    cursor.getString(1) ?: ""
+                routeIds[cursor.getInt(0)] = cursor.getString(1) ?: ""
             }
         }
 
@@ -246,8 +277,7 @@ class TransitRouteEngine(
         }
 
         val patterns = mutableMapOf<Int, Pattern>()
-        val positionsByStop =
-            mutableMapOf<String, MutableList<BoardPosition>>()
+        val positionsByStop = mutableMapOf<String, MutableList<BoardPosition>>()
 
         for ((patternId, stopIds) in stopsByPattern) {
             if (stopIds.size < 2) continue
@@ -283,11 +313,11 @@ class TransitRouteEngine(
         destinationStopId: String,
         departureTime: LocalDateTime,
         maxTransfers: Int,
+        minimumTransferMinutes: Long,
         maxResults: Int
     ): SearchResult {
 
-        var previousRound =
-            mutableMapOf<String, MutableList<Label>>()
+        var previousRound = mutableMapOf<String, MutableList<Label>>()
 
         previousRound[originStopId] = mutableListOf(
             Label(
@@ -299,21 +329,11 @@ class TransitRouteEngine(
 
         val foundJourneys = mutableListOf<Journey>()
 
-        val runsCache =
-            object : LinkedHashMap<RunCacheKey, List<TripRun>>(
-                16,
-                0.75f,
-                true
-            ) {
-                override fun removeEldestEntry(
-                    eldest: MutableMap.MutableEntry<
-                        RunCacheKey,
-                        List<TripRun>
-                    >?
-                ): Boolean {
-                    return size > MAX_CACHED_PATTERN_RUNS
-                }
+        val runsCache = object : LinkedHashMap<RunCacheKey, List<TripRun>>(16, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<RunCacheKey, List<TripRun>>?): Boolean {
+                return size > MAX_CACHED_PATTERN_RUNS
             }
+        }
 
         fun labelSignature(label: Label): String {
             val parts = mutableListOf<String>()
@@ -321,14 +341,9 @@ class TransitRouteEngine(
 
             while (current != null) {
                 val leg = current.leg
-
                 if (leg != null) {
-                    parts.add(
-                        "${leg.tripId}@${leg.departureAt}:" +
-                            "${leg.fromStopId}>${leg.toStopId}"
-                    )
+                    parts.add("${leg.tripId}@${leg.departureAt}:${leg.fromStopId}>${leg.toStopId}")
                 }
-
                 current = current.previous
             }
 
@@ -340,22 +355,14 @@ class TransitRouteEngine(
             stopId: String,
             candidate: Label
         ): Boolean {
-
-            val labels = target.getOrPut(stopId) {
-                mutableListOf()
-            }
-
+            val labels = target.getOrPut(stopId) { mutableListOf() }
             val signature = labelSignature(candidate)
 
-            if (labels.any {
-                    labelSignature(it) == signature
-                }
-            ) {
+            if (labels.any { labelSignature(it) == signature }) {
                 return false
             }
 
             labels.add(candidate)
-
             labels.sortWith(
                 compareBy<Label> { it.arrivalAt }
                     .thenBy { labelSignature(it) }
@@ -365,45 +372,26 @@ class TransitRouteEngine(
                 labels.removeAt(labels.lastIndex)
             }
 
-            return labels.any {
-                labelSignature(it) == signature
-            }
+            return labels.any { labelSignature(it) == signature }
         }
 
         for (round in 1..(maxTransfers + 1)) {
-
-            val nextRound =
-                mutableMapOf<String, MutableList<Label>>()
-
-            val boardPositionsByPattern =
-                mutableMapOf<Int, MutableList<BoardingCandidate>>()
+            val nextRound = mutableMapOf<String, MutableList<Label>>()
+            val boardPositionsByPattern = mutableMapOf<Int, MutableList<BoardingCandidate>>()
 
             for ((stopId, labels) in previousRound) {
                 val positions = positionsByStop[stopId].orEmpty()
 
                 for (label in labels) {
                     for (position in positions) {
-                        val pattern =
-                            patternsById[position.patternId] ?: continue
+                        val pattern = patternsById[position.patternId] ?: continue
 
-                        if (position.index >= pattern.stops.lastIndex) {
-                            continue
-                        }
-
-                        if (pattern.stops[position.index] != stopId) {
-                            continue
-                        }
+                        if (position.index >= pattern.stops.lastIndex) continue
+                        if (pattern.stops[position.index] != stopId) continue
 
                         boardPositionsByPattern
-                            .getOrPut(position.patternId) {
-                                mutableListOf()
-                            }
-                            .add(
-                                BoardingCandidate(
-                                    index = position.index,
-                                    label = label
-                                )
-                            )
+                            .getOrPut(position.patternId) { mutableListOf() }
+                            .add(BoardingCandidate(index = position.index, label = label))
                     }
                 }
             }
@@ -412,30 +400,21 @@ class TransitRouteEngine(
 
             for ((patternId, boardCandidates) in boardPositionsByPattern) {
                 val pattern = patternsById[patternId] ?: continue
-
                 val serviceDates = mutableSetOf<LocalDate>()
 
                 for (candidate in boardCandidates) {
-                    val requiredBoardingTime =
-                        if (candidate.label.leg == null) {
-                            candidate.label.arrivalAt
-                        } else {
-                            candidate.label.arrivalAt.plusMinutes(
-                                MINIMUM_TRANSFER_MINUTES
-                            )
-                        }
+                    val requiredBoardingTime = if (candidate.label.leg == null) {
+                        candidate.label.arrivalAt
+                    } else {
+                        candidate.label.arrivalAt.plusMinutes(minimumTransferMinutes)
+                    }
 
                     serviceDates.add(requiredBoardingTime.toLocalDate())
-                    serviceDates.add(
-                        requiredBoardingTime.toLocalDate().minusDays(1)
-                    )
+                    serviceDates.add(requiredBoardingTime.toLocalDate().minusDays(1))
                 }
 
                 for (serviceDate in serviceDates) {
-                    val cacheKey = RunCacheKey(
-                        patternId = patternId,
-                        serviceDate = serviceDate
-                    )
+                    val cacheKey = RunCacheKey(patternId = patternId, serviceDate = serviceDate)
 
                     val runs = runsCache[cacheKey]
                         ?: loadPatternRuns(
@@ -447,82 +426,47 @@ class TransitRouteEngine(
                         }
 
                     for (run in runs) {
-                        if (!matchesPattern(run, pattern)) {
-                            continue
-                        }
+                        if (!matchesPattern(run, pattern)) continue
 
                         for (candidate in boardCandidates) {
                             val boardIndex = candidate.index
-
-                            if (boardIndex >= run.stops.lastIndex) {
-                                continue
-                            }
+                            if (boardIndex >= run.stops.lastIndex) continue
 
                             val boardLabel = candidate.label
                             val boardStop = run.stops[boardIndex]
 
-                            val earliestBoarding =
-                                if (boardLabel.leg == null) {
-                                    boardLabel.arrivalAt
-                                } else {
-                                    boardLabel.arrivalAt.plusMinutes(
-                                        MINIMUM_TRANSFER_MINUTES
-                                    )
-                                }
+                            val earliestBoarding = if (boardLabel.leg == null) {
+                                boardLabel.arrivalAt
+                            } else {
+                                boardLabel.arrivalAt.plusMinutes(minimumTransferMinutes)
+                            }
 
-                            val departureSeconds =
-                                boardStop.departureSeconds
-                                    ?: boardStop.arrivalSeconds
+                            val departureSeconds = boardStop.departureSeconds
+                                ?: boardStop.arrivalSeconds
+                                ?: continue
+
+                            val actualDepartureAt = run.serviceDate.atStartOfDay()
+                                .plusSeconds(departureSeconds.toLong())
+
+                            if (actualDepartureAt.isBefore(earliestBoarding)) continue
+
+                            if (containsTripOccurrence(boardLabel, run.tripId, actualDepartureAt)) {
+                                continue
+                            }
+
+                            for (alightIndex in (boardIndex + 1) until run.stops.size) {
+                                val alightStop = run.stops[alightIndex]
+                                val arrivalSeconds = alightStop.arrivalSeconds
+                                    ?: alightStop.departureSeconds
                                     ?: continue
 
-                            val actualDepartureAt =
-                                run.serviceDate.atStartOfDay()
-                                    .plusSeconds(departureSeconds.toLong())
+                                val arrivalAt = run.serviceDate.atStartOfDay()
+                                    .plusSeconds(arrivalSeconds.toLong())
 
-                            if (actualDepartureAt.isBefore(earliestBoarding)) {
-                                continue
-                            }
+                                if (arrivalAt.isBefore(actualDepartureAt)) continue
 
-                            if (
-                                containsTripOccurrence(
-                                    label = boardLabel,
-                                    tripId = run.tripId,
-                                    departureAt = actualDepartureAt
-                                )
-                            ) {
-                                continue
-                            }
-
-                            for (
-                                alightIndex in
-                                (boardIndex + 1) until run.stops.size
-                            ) {
-                                val alightStop = run.stops[alightIndex]
-
-                                val arrivalSeconds =
-                                    alightStop.arrivalSeconds
-                                        ?: alightStop.departureSeconds
-                                        ?: continue
-
-                                val arrivalAt =
-                                    run.serviceDate.atStartOfDay()
-                                        .plusSeconds(arrivalSeconds.toLong())
-
-                                if (arrivalAt.isBefore(actualDepartureAt)) {
-                                    continue
-                                }
-
-                                val totalDuration = Duration.between(
-                                    departureTime,
-                                    arrivalAt
-                                ).toMinutes()
-
-                                if (
-                                    totalDuration < 0 ||
-                                    totalDuration > MAX_JOURNEY_MINUTES
-                                ) {
-                                    continue
-                                }
+                                val totalDuration = Duration.between(departureTime, arrivalAt).toMinutes()
+                                if (totalDuration < 0 || totalDuration > MAX_JOURNEY_MINUTES) continue
 
                                 val leg = RouteLeg(
                                     tripId = run.tripId,
@@ -533,8 +477,12 @@ class TransitRouteEngine(
                                     headsign = run.headsign,
                                     fromStopId = boardStop.stopId,
                                     fromStopName = boardStop.stopName,
+                                    fromLat = boardStop.latitude,
+                                    fromLon = boardStop.longitude,
                                     toStopId = alightStop.stopId,
                                     toStopName = alightStop.stopName,
+                                    toLat = alightStop.latitude,
+                                    toLon = alightStop.longitude,
                                     departureAt = actualDepartureAt,
                                     arrivalAt = arrivalAt
                                 )
@@ -545,13 +493,7 @@ class TransitRouteEngine(
                                     leg = leg
                                 )
 
-                                if (
-                                    addLabel(
-                                        target = nextRound,
-                                        stopId = alightStop.stopId,
-                                        candidate = newLabel
-                                    )
-                                ) {
+                                if (addLabel(nextRound, alightStop.stopId, newLabel)) {
                                     changed = true
                                 }
                             }
@@ -560,35 +502,25 @@ class TransitRouteEngine(
                 }
             }
 
-            val destinationLabels =
-                nextRound[destinationStopId].orEmpty()
-
+            val destinationLabels = nextRound[destinationStopId].orEmpty()
             for (destinationLabel in destinationLabels) {
                 val journey = buildJourney(destinationLabel)
-
-                if (
-                    journey.legs.isNotEmpty() &&
-                    journey.transfers <= MAX_TRANSFERS
-                ) {
+                if (journey.legs.isNotEmpty() && journey.transfers <= maxTransfers) {
                     foundJourneys.add(journey)
                 }
             }
 
-            if (!changed) {
-                break
-            }
-
+            if (!changed) break
             previousRound = nextRound
         }
 
         val journeys = foundJourneys
             .distinctBy { journey ->
                 journey.legs.joinToString("|") {
-                    "${it.tripId}@${it.departureAt}:" +
-                        "${it.fromStopId}>${it.toStopId}"
+                    "${it.tripId}@${it.departureAt}:${it.fromStopId}>${it.toStopId}"
                 }
             }
-            .filter { it.transfers <= MAX_TRANSFERS }
+            .filter { it.transfers <= maxTransfers }
             .sortedWith(
                 compareBy<Journey> { it.arrivalAt }
                     .thenBy { it.transfers }
@@ -597,10 +529,12 @@ class TransitRouteEngine(
             .take(maxResults)
 
         return if (journeys.isEmpty()) {
-            SearchResult(
-                emptyList(),
-                "לא נמצא מסלול מתאים במועד המבוקש."
-            )
+            val message = if (maxTransfers == 0) {
+                "לא נמצאו קווים ישירים בין התחנות. אפשר לאפשר החלפות במסך ההגדרות."
+            } else {
+                "לא נמצא מסלול מתאים במועד המבוקש (עד $maxTransfers החלפות)."
+            }
+            SearchResult(emptyList(), message)
         } else {
             SearchResult(journeys)
         }
@@ -611,39 +545,20 @@ class TransitRouteEngine(
         tripId: String,
         departureAt: LocalDateTime
     ): Boolean {
-
         var current: Label? = label
-
         while (current != null) {
             val leg = current.leg
-
-            if (
-                leg != null &&
-                leg.tripId == tripId &&
-                leg.departureAt == departureAt
-            ) {
+            if (leg != null && leg.tripId == tripId && leg.departureAt == departureAt) {
                 return true
             }
-
             current = current.previous
         }
-
         return false
     }
 
-    private fun matchesPattern(
-        run: TripRun,
-        pattern: Pattern
-    ): Boolean {
-
-        if (run.routeId != pattern.routeId) {
-            return false
-        }
-
-        if (run.stops.size != pattern.stops.size) {
-            return false
-        }
-
+    private fun matchesPattern(run: TripRun, pattern: Pattern): Boolean {
+        if (run.routeId != pattern.routeId) return false
+        if (run.stops.size != pattern.stops.size) return false
         return run.stops.indices.all { index ->
             run.stops[index].stopId == pattern.stops[index]
         }
@@ -682,20 +597,16 @@ class TransitRouteEngine(
                 st.stop_id,
                 COALESCE(s.stop_name, ''),
                 st.arrival_time,
-                st.departure_time
+                st.departure_time,
+                s.stop_lat,
+                s.stop_lon
             FROM trip_patterns tp
-            JOIN trips t
-                ON t.trip_id = tp.trip_id
-            JOIN routes r
-                ON r.route_id = t.route_id
-            LEFT JOIN agency a
-                ON a.agency_id = r.agency_id
-            JOIN calendar c
-                ON c.service_id = tp.service_id
-            JOIN stop_times st
-                ON st.trip_id = tp.trip_id
-            LEFT JOIN stops s
-                ON s.stop_id = st.stop_id
+            JOIN trips t ON t.trip_id = tp.trip_id
+            JOIN routes r ON r.route_id = t.route_id
+            LEFT JOIN agency a ON a.agency_id = r.agency_id
+            JOIN calendar c ON c.service_id = tp.service_id
+            JOIN stop_times st ON st.trip_id = tp.trip_id
+            LEFT JOIN stops s ON s.stop_id = st.stop_id
             WHERE tp.pattern_id = ?
               AND r.route_id = ?
               AND c.start_date <= ?
@@ -713,7 +624,6 @@ class TransitRouteEngine(
                 date
             )
         ).use { cursor ->
-
             while (cursor.moveToNext()) {
                 val tripId = cursor.getString(0) ?: continue
 
@@ -732,12 +642,10 @@ class TransitRouteEngine(
                     TripStopTime(
                         stopId = cursor.getString(6) ?: "",
                         stopName = cursor.getString(7) ?: "",
-                        arrivalSeconds =
-                            if (cursor.isNull(8)) null
-                            else cursor.getInt(8),
-                        departureSeconds =
-                            if (cursor.isNull(9)) null
-                            else cursor.getInt(9)
+                        arrivalSeconds = if (cursor.isNull(8)) null else cursor.getInt(8),
+                        departureSeconds = if (cursor.isNull(9)) null else cursor.getInt(9),
+                        latitude = if (cursor.isNull(10)) null else cursor.getDouble(10),
+                        longitude = if (cursor.isNull(11)) null else cursor.getDouble(11)
                     )
                 )
             }
@@ -757,10 +665,7 @@ class TransitRouteEngine(
         }
     }
 
-    private fun buildJourney(
-        destinationLabel: Label
-    ): Journey {
-
+    private fun buildJourney(destinationLabel: Label): Journey {
         val legs = mutableListOf<RouteLeg>()
         var current: Label? = destinationLabel
 
@@ -772,18 +677,13 @@ class TransitRouteEngine(
         legs.reverse()
 
         if (legs.isEmpty()) {
-            throw IllegalStateException(
-                "לא ניתן לשחזר את פרטי המסלול."
-            )
+            throw IllegalStateException("לא ניתן לשחזר את פרטי המסלול.")
         }
 
         val first = legs.first()
         val last = legs.last()
 
-        val duration = Duration.between(
-            first.departureAt,
-            last.arrivalAt
-        ).toMinutes()
+        val duration = Duration.between(first.departureAt, last.arrivalAt).toMinutes()
 
         return Journey(
             legs = legs,

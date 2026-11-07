@@ -22,7 +22,8 @@ class TransitMyLocationControl(context: Context) {
     private val appContext = context.applicationContext
 
     private val locationManager =
-        appContext.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        appContext.getSystemService(Context.LOCATION_SERVICE)
+            as LocationManager
 
     fun hasLocationPermission(): Boolean {
         val fine = ContextCompat.checkSelfPermission(
@@ -38,12 +39,32 @@ class TransitMyLocationControl(context: Context) {
         return fine || coarse
     }
 
+    fun hasLocationProvider(): Boolean {
+        return try {
+            val providers = locationManager.getProviders(true)
+
+            providers.any {
+                it == LocationManager.GPS_PROVIDER ||
+                    it == LocationManager.NETWORK_PROVIDER
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     suspend fun moveToCurrentLocation(
         map: MapLibreMap
     ): Result<Location> {
         return try {
+            if (!hasLocationProvider()) {
+                throw IllegalStateException(
+                    "במכשיר זה לא זמינים שירותי מיקום. " +
+                        "אפשר להמשיך להשתמש באפליקציה ולהזין מוצא ויעד ידנית."
+                )
+            }
+
             if (!hasLocationPermission()) {
-                throw SecurityException("אין הרשאת מיקום")
+                throw SecurityException("לא ניתנה הרשאת מיקום")
             }
 
             val location = withTimeout(20_000L) {
@@ -72,6 +93,7 @@ class TransitMyLocationControl(context: Context) {
             )
 
             Result.success(location)
+
         } catch (exception: Exception) {
             Result.failure(exception)
         }
@@ -85,32 +107,32 @@ class TransitMyLocationControl(context: Context) {
                 Manifest.permission.ACCESS_FINE_LOCATION
             ) == PackageManager.PERMISSION_GRANTED
 
-            val preferredProvider = if (fineGranted) {
-                LocationManager.GPS_PROVIDER
-            } else {
-                LocationManager.NETWORK_PROVIDER
+            val providers = try {
+                locationManager.getProviders(true)
+            } catch (exception: Exception) {
+                emptyList()
             }
 
             val provider = when {
-                locationManager.isProviderEnabled(preferredProvider) ->
-                    preferredProvider
-
-                locationManager.isProviderEnabled(
-                    LocationManager.NETWORK_PROVIDER
-                ) -> LocationManager.NETWORK_PROVIDER
-
-                locationManager.isProviderEnabled(
+                fineGranted &&
+                    LocationManager.GPS_PROVIDER in providers ->
                     LocationManager.GPS_PROVIDER
-                ) -> LocationManager.GPS_PROVIDER
+
+                LocationManager.NETWORK_PROVIDER in providers ->
+                    LocationManager.NETWORK_PROVIDER
 
                 else -> null
-            } ?: throw IllegalStateException("שירותי המיקום כבויים במכשיר")
+            } ?: throw IllegalStateException(
+                "לא נמצא ספק מיקום המתאים להרשאות שניתנו"
+            )
 
             val listener = object : LocationListener {
+
                 override fun onLocationChanged(location: Location) {
                     if (continuation.isActive) {
                         continuation.resume(location)
                     }
+
                     locationManager.removeUpdates(this)
                 }
 
@@ -140,6 +162,7 @@ class TransitMyLocationControl(context: Context) {
                 )
             } catch (exception: Exception) {
                 locationManager.removeUpdates(listener)
+
                 if (continuation.isActive) {
                     continuation.resumeWithException(exception)
                 }

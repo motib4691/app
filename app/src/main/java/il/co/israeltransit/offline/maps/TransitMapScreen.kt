@@ -5,14 +5,18 @@ import android.content.pm.PackageManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
@@ -29,7 +33,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import il.co.israeltransit.offline.database.TransitRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -40,7 +46,9 @@ private const val STOP_LAYER_ID = "transit-stops-individual"
 
 private data class SelectedTransitStop(
     val id: String,
-    val name: String
+    val name: String,
+    val latitude: Double? = null,
+    val longitude: Double? = null
 )
 
 @Composable
@@ -50,6 +58,8 @@ fun TransitMapScreen(
     initialLatitude: Double = 31.7683,
     initialLongitude: Double = 35.2137,
     initialZoom: Double = 12.0,
+    onPlanRouteFrom: ((TransitRepository.TransitStop) -> Unit)? = null,
+    onPlanRouteTo: ((TransitRepository.TransitStop) -> Unit)? = null,
     onError: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -87,13 +97,8 @@ fun TransitMapScreen(
 
     fun moveToLocation() {
         val map = activeMap
-
         if (map == null) {
-            Toast.makeText(
-                context,
-                "המפה עדיין נטענת",
-                Toast.LENGTH_SHORT
-            ).show()
+            Toast.makeText(context, "המפה עדיין נטענת", Toast.LENGTH_SHORT).show()
             return
         }
 
@@ -102,8 +107,7 @@ fun TransitMapScreen(
                 .onFailure { exception ->
                     Toast.makeText(
                         context,
-                        exception.message
-                            ?: "לא ניתן לקבל את מיקום המכשיר",
+                        exception.message ?: "לא ניתן לקבל את מיקום המכשיר",
                         Toast.LENGTH_LONG
                     ).show()
                 }
@@ -114,7 +118,6 @@ fun TransitMapScreen(
         rememberLauncherForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
         ) { permissions ->
-
             val granted =
                 permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
                     permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
@@ -140,30 +143,28 @@ fun TransitMapScreen(
 
             map.getStyle { style ->
                 TransitStopMapLayer.install(
-    context = applicationContext,
-    style = style,
-    map = map,
-    onComplete = {
+                    context = applicationContext,
+                    style = style,
+                    map = map,
+                    onComplete = {
                         val clickListener =
                             MapLibreMap.OnMapClickListener { coordinate ->
+                                val screenPoint = map.projection.toScreenLocation(coordinate)
 
-                                val screenPoint =
-    map.projection.toScreenLocation(coordinate)
+                                if (
+                                    TransitMapClusterController.handleClusterTap(
+                                        map = map,
+                                        style = style,
+                                        screenPoint = screenPoint
+                                    )
+                                ) {
+                                    return@OnMapClickListener true
+                                }
 
-if (
-    TransitMapClusterController.handleClusterTap(
-        map = map,
-        style = style,
-        screenPoint = screenPoint
-    )
-) {
-    return@OnMapClickListener true
-}
-
-val features = map.queryRenderedFeatures(
-    screenPoint,
-    STOP_LAYER_ID
-)
+                                val features = map.queryRenderedFeatures(
+                                    screenPoint,
+                                    STOP_LAYER_ID
+                                )
 
                                 val feature = features.firstOrNull()
 
@@ -188,10 +189,14 @@ val features = map.queryRenderedFeatures(
                                         ?.takeIf { it.isNotBlank() }
                                         ?: "תחנה ללא שם"
 
+                                    val geometry = feature.geometry() as? org.maplibre.geojson.Point
+
                                     if (stopId.isNotBlank()) {
                                         selectedStop = SelectedTransitStop(
                                             id = stopId,
-                                            name = stopName
+                                            name = stopName,
+                                            latitude = geometry?.latitude(),
+                                            longitude = geometry?.longitude()
                                         )
 
                                         selectedLines = emptyList()
@@ -200,22 +205,16 @@ val features = map.queryRenderedFeatures(
 
                                         coroutineScope.launch {
                                             try {
-                                                val lines = withContext(
-                                                    Dispatchers.IO
-                                                ) {
-                                                    repository.getLinesForStop(
-                                                        stopId
-                                                    )
+                                                val lines = withContext(Dispatchers.IO) {
+                                                    repository.getLinesForStop(stopId)
                                                 }
-
                                                 if (selectedStop?.id == stopId) {
                                                     selectedLines = lines
                                                 }
                                             } catch (exception: Exception) {
                                                 if (selectedStop?.id == stopId) {
-                                                    linesError =
-                                                        exception.message
-                                                            ?: "לא ניתן לטעון את הקווים בתחנה"
+                                                    linesError = exception.message
+                                                        ?: "לא ניתן לטעון את הקווים בתחנה"
                                                 }
                                             } finally {
                                                 if (selectedStop?.id == stopId) {
@@ -273,17 +272,15 @@ val features = map.queryRenderedFeatures(
                             Toast.LENGTH_LONG
                         ).show()
                     } else {
-                        val fineGranted =
-                            ContextCompat.checkSelfPermission(
-                                context,
-                                Manifest.permission.ACCESS_FINE_LOCATION
-                            ) == PackageManager.PERMISSION_GRANTED
+                        val fineGranted = ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.ACCESS_FINE_LOCATION
+                        ) == PackageManager.PERMISSION_GRANTED
 
-                        val coarseGranted =
-                            ContextCompat.checkSelfPermission(
-                                context,
-                                Manifest.permission.ACCESS_COARSE_LOCATION
-                            ) == PackageManager.PERMISSION_GRANTED
+                        val coarseGranted = ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.ACCESS_COARSE_LOCATION
+                        ) == PackageManager.PERMISSION_GRANTED
 
                         if (fineGranted || coarseGranted) {
                             moveToLocation()
@@ -322,13 +319,42 @@ val features = map.queryRenderedFeatures(
                         style = MaterialTheme.typography.bodyMedium
                     )
 
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    val transitStop = TransitRepository.TransitStop(
+                        stopId = stop.id,
+                        name = stop.name,
+                        latitude = stop.latitude,
+                        longitude = stop.longitude
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (onPlanRouteFrom != null) {
+                            Button(
+                                onClick = { onPlanRouteFrom(transitStop) },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("מסלול מכאן", fontSize = 13.sp)
+                            }
+                        }
+
+                        if (onPlanRouteTo != null) {
+                            Button(
+                                onClick = { onPlanRouteTo(transitStop) },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("מסלול לכאן", fontSize = 13.sp)
+                            }
+                        }
+                    }
+
                     Text(
                         text = "קווים בתחנה",
                         style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.padding(
-                            top = 12.dp,
-                            bottom = 6.dp
-                        )
+                        modifier = Modifier.padding(top = 10.dp, bottom = 4.dp)
                     )
 
                     when {
@@ -359,6 +385,7 @@ val features = map.queryRenderedFeatures(
                             LazyColumn(
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .height(140.dp)
                                     .padding(top = 4.dp)
                             ) {
                                 items(
@@ -368,11 +395,12 @@ val features = map.queryRenderedFeatures(
                                     Column(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(vertical = 5.dp)
+                                            .padding(vertical = 4.dp)
                                     ) {
                                         Text(
                                             text = "קו ${line.lineNumber}",
-                                            style = MaterialTheme.typography.bodyLarge
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Bold
                                         )
 
                                         if (line.lineName.isNotBlank()) {

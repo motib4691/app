@@ -26,6 +26,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -297,7 +298,6 @@ fun SavedStopsScreen(
                     Text(stop.stopName)
                     Text("מספר תחנה: ${stop.stopId}", style = MaterialTheme.typography.bodySmall)
 
-                    // כפתורי ניתוב מהירים
                     val transitStop = TransitRepository.TransitStop(
                         stopId = stop.stopId,
                         name = stop.stopName,

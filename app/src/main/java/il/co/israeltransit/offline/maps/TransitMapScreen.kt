@@ -51,6 +51,9 @@ fun TransitMapScreen(
     }
     val coroutineScope = rememberCoroutineScope()
 
+    var activeMap by remember {
+        mutableStateOf<MapLibreMap?>(null)
+    }
     var selectedStop by remember {
         mutableStateOf<SelectedTransitStop?>(null)
     }
@@ -70,6 +73,8 @@ fun TransitMapScreen(
         onError
     ) {
         { map: MapLibreMap ->
+            activeMap = map
+
             map.getStyle { style ->
                 TransitStopMapLayer.install(
                     context = context,
@@ -173,6 +178,13 @@ fun TransitMapScreen(
             onMapError = onError
         )
 
+        TransitMapControls(
+            map = activeMap,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(12.dp)
+        )
+
         selectedStop?.let { stop ->
             Card(
                 modifier = Modifier
@@ -196,7 +208,10 @@ fun TransitMapScreen(
                     Text(
                         text = "קווים בתחנה",
                         style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.padding(top = 12.dp, bottom = 6.dp)
+                        modifier = Modifier.padding(
+                            top = 12.dp,
+                            bottom = 6.dp
+                        )
                     )
 
                     when {

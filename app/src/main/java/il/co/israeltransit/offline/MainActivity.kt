@@ -84,7 +84,6 @@ fun TransitApp() {
 
     var currentScreen by remember { mutableStateOf("home") }
 
-    // מצב ניווט משותף לתכנון מסלול ישירות מתחנה שנבחרה במסכים אחרים
     var routePlannerInitialOrigin by remember { mutableStateOf<TransitRepository.TransitStop?>(null) }
     var routePlannerInitialDestination by remember { mutableStateOf<TransitRepository.TransitStop?>(null) }
 
@@ -110,7 +109,17 @@ fun TransitApp() {
                     )
 
                     "line" -> LineSearchScreen(
-                        onBack = { currentScreen = "home" }
+                        onBack = { currentScreen = "home" },
+                        onPlanRouteFrom = { stop ->
+                            routePlannerInitialOrigin = stop
+                            routePlannerInitialDestination = null
+                            currentScreen = "route"
+                        },
+                        onPlanRouteTo = { stop ->
+                            routePlannerInitialOrigin = null
+                            routePlannerInitialDestination = stop
+                            currentScreen = "route"
+                        }
                     )
 
                     "station" -> StopSearchScreen(
@@ -152,7 +161,17 @@ fun TransitApp() {
                     )
 
                     "map" -> OfflineMapImportScreen(
-                        onBack = { currentScreen = "home" }
+                        onBack = { currentScreen = "home" },
+                        onPlanRouteFrom = { stop ->
+                            routePlannerInitialOrigin = stop
+                            routePlannerInitialDestination = null
+                            currentScreen = "route"
+                        },
+                        onPlanRouteTo = { stop ->
+                            routePlannerInitialOrigin = null
+                            routePlannerInitialDestination = stop
+                            currentScreen = "route"
+                        }
                     )
 
                     "settings" -> SettingsScreen(

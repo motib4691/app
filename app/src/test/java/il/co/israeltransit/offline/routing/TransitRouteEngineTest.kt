@@ -1,4 +1,3 @@
-
 package il.co.israeltransit.offline.routing
 
 import android.content.ContentValues
@@ -29,7 +28,9 @@ class TransitRouteEngineTest {
         val id: String,
         val name: String,
         val arrival: Int,
-        val departure: Int
+        val departure: Int,
+        val lat: Double = 31.77,
+        val lon: Double = 35.21
     )
 
     @Before
@@ -246,8 +247,8 @@ class TransitRouteEngineTest {
                 val stopValues = ContentValues().apply {
                     put("stop_id", stop.id)
                     put("stop_name", stop.name)
-                    put("stop_lat", 0.0)
-                    put("stop_lon", 0.0)
+                    put("stop_lat", stop.lat)
+                    put("stop_lon", stop.lon)
                 }
 
                 db.insertWithOnConflict(
@@ -305,24 +306,30 @@ class TransitRouteEngineTest {
         id: String,
         name: String,
         arrival: String,
-        departure: String = arrival
+        departure: String = arrival,
+        lat: Double = 31.77,
+        lon: Double = 35.21
     ) = TestStop(
         id = id,
         name = name,
         arrival = seconds(arrival),
-        departure = seconds(departure)
+        departure = seconds(departure),
+        lat = lat,
+        lon = lon
     )
 
     private fun search(
         origin: String,
         destination: String,
         time: String,
-        transfers: Int = 0
+        transfers: Int = 3,
+        minimumTransferMinutes: Long = 2L
     ) = engine.findJourneys(
         originStopId = origin,
         destinationStopId = destination,
         departureTime = LocalDateTime.parse(time),
         maxTransfers = transfers,
+        minimumTransferMinutes = minimumTransferMinutes,
         maxResults = 5
     )
 
@@ -351,7 +358,8 @@ class TransitRouteEngineTest {
         val result = search(
             "A",
             "B",
-            "2026-11-06T07:55:00"
+            "2026-11-06T07:55:00",
+            transfers = 0
         )
 
         assertTrue(result.error ?: "", result.journeys.isNotEmpty())
@@ -363,7 +371,7 @@ class TransitRouteEngineTest {
     }
 
     @Test
-    fun acceptsTransferWithTwoMinutesAvailable() {
+    fun directOnlySettingRejectsTransferJourneys() {
         addTrip(
             "first",
             1,
@@ -379,7 +387,39 @@ class TransitRouteEngineTest {
             2,
             "line2",
             listOf(
-                stop("X", "תחנת החלפה", "08:22:00"),
+                stop("X", "תחנת החלפה", "08:25:00"),
+                stop("B", "יעד", "08:45:00")
+            )
+        )
+
+        val result = search(
+            "A",
+            "B",
+            "2026-11-06T07:55:00",
+            transfers = 0
+        )
+
+        assertTrue(result.journeys.isEmpty())
+    }
+
+    @Test
+    fun acceptsTransferWithSufficientBuffer() {
+        addTrip(
+            "first",
+            1,
+            "line1",
+            listOf(
+                stop("A", "מוצא", "08:00:00"),
+                stop("X", "תחנת החלפה", "08:20:00")
+            )
+        )
+
+        addTrip(
+            "second",
+            2,
+            "line2",
+            listOf(
+                stop("X", "תחנת החלפה", "08:23:00"),
                 stop("B", "יעד", "08:40:00")
             )
         )
@@ -388,7 +428,8 @@ class TransitRouteEngineTest {
             "A",
             "B",
             "2026-11-06T07:55:00",
-            transfers = 1
+            transfers = 1,
+            minimumTransferMinutes = 2L
         )
 
         assertTrue(result.error ?: "", result.journeys.isNotEmpty())
@@ -397,7 +438,7 @@ class TransitRouteEngineTest {
     }
 
     @Test
-    fun rejectsTransferThatCannotBeReachedInTime() {
+    fun rejectsTransferWhenBufferIsTooSmall() {
         addTrip(
             "first",
             1,
@@ -413,7 +454,7 @@ class TransitRouteEngineTest {
             2,
             "line2",
             listOf(
-                stop("X", "תחנת החלפה", "08:21:00"),
+                stop("X", "תחנת החלפה", "08:23:00"),
                 stop("B", "יעד", "08:40:00")
             )
         )
@@ -422,10 +463,50 @@ class TransitRouteEngineTest {
             "A",
             "B",
             "2026-11-06T07:55:00",
-            transfers = 1
+            transfers = 1,
+            minimumTransferMinutes = 5L
         )
 
         assertTrue(result.journeys.isEmpty())
+    }
+
+    @Test
+    fun supportsTransferBetweenNearbyStopsWithWalking() {
+        // תחנה X1 במיקום מסוים
+        addTrip(
+            "first",
+            1,
+            "line1",
+            listOf(
+                stop("A", "מוצא", "08:00:00", lat = 31.7700, lon = 35.2100),
+                stop("X1", "רציף ראשון", "08:20:00", lat = 31.7750, lon = 35.2150)
+            )
+        )
+
+        // תחנה X2 במרחק כ-100 מטר מ-X1 (שינוי זעיר בקואורדינטות)
+        addTrip(
+            "second",
+            2,
+            "line2",
+            listOf(
+                stop("X2", "רציף שני סמוך", "08:30:00", lat = 31.7758, lon = 35.2155),
+                stop("B", "יעד", "08:50:00", lat = 31.7800, lon = 35.2200)
+            )
+        )
+
+        val result = search(
+            "A",
+            "B",
+            "2026-11-06T07:55:00",
+            transfers = 1,
+            minimumTransferMinutes = 2L
+        )
+
+        assertTrue(result.error ?: "", result.journeys.isNotEmpty())
+        val journey = result.journeys.first()
+        assertEquals(2, journey.legs.size)
+        assertEquals("X1", journey.legs[0].toStopId)
+        assertEquals("X2", journey.legs[1].fromStopId)
     }
 
     @Test
@@ -443,11 +524,11 @@ class TransitRouteEngineTest {
         val result = search(
             "A",
             "B",
-            "2026-11-07T01:00:00"
+            "2026-11-07T01:00:00",
+            transfers = 0
         )
 
         assertTrue(result.error ?: "", result.journeys.isNotEmpty())
-
         assertEquals(
             LocalDateTime.parse("2026-11-07T01:30:00"),
             result.journeys.first().arrivalAt

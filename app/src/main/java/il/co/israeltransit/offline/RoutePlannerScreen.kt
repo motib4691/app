@@ -88,7 +88,10 @@ private val plannerTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 
 @Composable
 fun RoutePlannerScreen(
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    initialOrigin: TransitRepository.TransitStop? = null,
+    initialDestination: TransitRepository.TransitStop? = null,
+    onClearInitialStops: () -> Unit = {}
 ) {
     val context = LocalContext.current
 
@@ -120,6 +123,26 @@ fun RoutePlannerScreen(
     var showMapNotInstalledDialog by remember { mutableStateOf(false) }
 
     val savedStops = remember(context) { loadPlannerSavedStops(context) }
+
+    // טעינת תחנה שהועברה ממסך אחר (למשל מחיפוש תחנה או התחנות שלי)
+    LaunchedEffect(initialOrigin, initialDestination) {
+        if (initialOrigin != null) {
+            selectedOrigin = initialOrigin
+            originQuery = initialOrigin.name
+            originResults = emptyList()
+            activeField = "destination"
+        }
+        if (initialDestination != null) {
+            selectedDestination = initialDestination
+            destinationQuery = initialDestination.name
+            destinationResults = emptyList()
+            activeField = "origin"
+        }
+        if (initialOrigin != null || initialDestination != null) {
+            routeResult = null
+            onClearInitialStops()
+        }
+    }
 
     LaunchedEffect(originQuery, activeField) {
         if (activeField != "origin") return@LaunchedEffect

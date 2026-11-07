@@ -14,6 +14,15 @@ import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
+import org.maplibre.android.style.layers.CircleLayer
+import org.maplibre.android.style.layers.PropertyFactory.circleColor
+import org.maplibre.android.style.layers.PropertyFactory.circleRadius
+import org.maplibre.android.style.layers.PropertyFactory.circleStrokeColor
+import org.maplibre.android.style.layers.PropertyFactory.circleStrokeWidth
+import org.maplibre.android.style.sources.GeoJsonSource
+import org.maplibre.geojson.Feature
+import org.maplibre.geojson.FeatureCollection
+import org.maplibre.geojson.Point
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -41,9 +50,7 @@ class TransitMyLocationControl(context: Context) {
 
     fun hasLocationProvider(): Boolean {
         return try {
-            val providers = locationManager.getProviders(true)
-
-            providers.any {
+            locationManager.getProviders(true).any {
                 it == LocationManager.GPS_PROVIDER ||
                     it == LocationManager.NETWORK_PROVIDER
             }
@@ -92,10 +99,59 @@ class TransitMyLocationControl(context: Context) {
                 )
             )
 
+            addLocationMarker(
+                map = map,
+                latitude = location.latitude,
+                longitude = location.longitude
+            )
+
             Result.success(location)
 
         } catch (exception: Exception) {
             Result.failure(exception)
+        }
+    }
+
+    private fun addLocationMarker(
+        map: MapLibreMap,
+        latitude: Double,
+        longitude: Double
+    ) {
+        map.getStyle { style ->
+            try {
+                val feature = Feature.fromGeometry(
+                    Point.fromLngLat(longitude, latitude)
+                )
+
+                val collection = FeatureCollection.fromFeatures(
+                    arrayOf(feature)
+                )
+
+                val existingSource =
+                    style.getSource(SOURCE_ID) as? GeoJsonSource
+
+                if (existingSource != null) {
+                    existingSource.setGeoJson(collection)
+                } else {
+                    style.addSource(
+                        GeoJsonSource(SOURCE_ID, collection)
+                    )
+                }
+
+                if (style.getLayer(LAYER_ID) == null) {
+                    style.addLayer(
+                        CircleLayer(LAYER_ID, SOURCE_ID)
+                            .withProperties(
+                                circleColor("#1976D2"),
+                                circleRadius(9f),
+                                circleStrokeColor("#FFFFFF"),
+                                circleStrokeWidth(3f)
+                            )
+                    )
+                }
+            } catch (_: Exception) {
+                // כשל בסימון אינו אמור לפגוע במפה או בניווט.
+            }
         }
     }
 
@@ -109,7 +165,7 @@ class TransitMyLocationControl(context: Context) {
 
             val providers = try {
                 locationManager.getProviders(true)
-            } catch (exception: Exception) {
+            } catch (_: Exception) {
                 emptyList()
             }
 
@@ -133,7 +189,10 @@ class TransitMyLocationControl(context: Context) {
                         continuation.resume(location)
                     }
 
-                    locationManager.removeUpdates(this)
+                    try {
+                        locationManager.removeUpdates(this)
+                    } catch (_: SecurityException) {
+                    }
                 }
 
                 @Deprecated("Deprecated by Android")
@@ -149,7 +208,10 @@ class TransitMyLocationControl(context: Context) {
             }
 
             continuation.invokeOnCancellation {
-                locationManager.removeUpdates(listener)
+                try {
+                    locationManager.removeUpdates(listener)
+                } catch (_: SecurityException) {
+                }
             }
 
             try {
@@ -161,11 +223,19 @@ class TransitMyLocationControl(context: Context) {
                     Looper.getMainLooper()
                 )
             } catch (exception: Exception) {
-                locationManager.removeUpdates(listener)
+                try {
+                    locationManager.removeUpdates(listener)
+                } catch (_: SecurityException) {
+                }
 
                 if (continuation.isActive) {
                     continuation.resumeWithException(exception)
                 }
             }
         }
+
+    private companion object {
+        const val SOURCE_ID = "transit-current-location-source"
+        const val LAYER_ID = "transit-current-location-layer"
+    }
 }

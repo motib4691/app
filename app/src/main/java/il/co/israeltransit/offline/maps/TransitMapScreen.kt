@@ -1,12 +1,15 @@
-
 package il.co.israeltransit.offline.maps
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -14,11 +17,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.maplibre.android.maps.MapLibreMap
 import java.io.File
 
@@ -39,9 +46,22 @@ fun TransitMapScreen(
     onError: (String) -> Unit = {}
 ) {
     val context = LocalContext.current.applicationContext
+    val repository = remember(context) {
+        TransitStopDetailsRepository(context)
+    }
+    val coroutineScope = rememberCoroutineScope()
 
     var selectedStop by remember {
         mutableStateOf<SelectedTransitStop?>(null)
+    }
+    var selectedLines by remember {
+        mutableStateOf<List<TransitStopLine>>(emptyList())
+    }
+    var isLoadingLines by remember {
+        mutableStateOf(false)
+    }
+    var linesError by remember {
+        mutableStateOf<String?>(null)
     }
 
     val mapReadyCallback = remember(
@@ -59,46 +79,72 @@ fun TransitMapScreen(
                             MapLibreMap.OnMapClickListener { coordinate ->
 
                                 val screenPoint =
-                                    map.projection.toScreenLocation(
-                                        coordinate
-                                    )
+                                    map.projection.toScreenLocation(coordinate)
 
-                                val features =
-                                    map.queryRenderedFeatures(
-                                        screenPoint,
-                                        STOP_LAYER_ID
-                                    )
+                                val features = map.queryRenderedFeatures(
+                                    screenPoint,
+                                    STOP_LAYER_ID
+                                )
 
                                 val feature = features.firstOrNull()
 
                                 if (feature == null) {
                                     selectedStop = null
+                                    selectedLines = emptyList()
+                                    linesError = null
+                                    isLoadingLines = false
                                     false
                                 } else {
-                                    val properties =
-                                        feature.properties()
+                                    val properties = feature.properties()
 
-                                    val stopId =
-                                        properties
-                                            ?.get("stop_id")
-                                            ?.takeIf { !it.isJsonNull }
-                                            ?.asString
-                                            ?: ""
+                                    val stopId = properties
+                                        ?.get("stop_id")
+                                        ?.takeIf { !it.isJsonNull }
+                                        ?.asString ?: ""
 
-                                    val stopName =
-                                        properties
-                                            ?.get("stop_name")
-                                            ?.takeIf { !it.isJsonNull }
-                                            ?.asString
-                                            ?.takeIf { it.isNotBlank() }
-                                            ?: "תחנה ללא שם"
+                                    val stopName = properties
+                                        ?.get("stop_name")
+                                        ?.takeIf { !it.isJsonNull }
+                                        ?.asString
+                                        ?.takeIf { it.isNotBlank() }
+                                        ?: "תחנה ללא שם"
 
                                     if (stopId.isNotBlank()) {
-                                        selectedStop =
-                                            SelectedTransitStop(
-                                                id = stopId,
-                                                name = stopName
-                                            )
+                                        selectedStop = SelectedTransitStop(
+                                            id = stopId,
+                                            name = stopName
+                                        )
+
+                                        selectedLines = emptyList()
+                                        linesError = null
+                                        isLoadingLines = true
+
+                                        coroutineScope.launch {
+                                            try {
+                                                val lines = withContext(
+                                                    Dispatchers.IO
+                                                ) {
+                                                    repository.getLinesForStop(
+                                                        stopId
+                                                    )
+                                                }
+
+                                                if (selectedStop?.id == stopId) {
+                                                    selectedLines = lines
+                                                }
+                                            } catch (exception: Exception) {
+                                                if (selectedStop?.id == stopId) {
+                                                    linesError =
+                                                        exception.message
+                                                            ?: "לא ניתן לטעון את הקווים בתחנה"
+                                                }
+                                            } finally {
+                                                if (selectedStop?.id == stopId) {
+                                                    isLoadingLines = false
+                                                }
+                                            }
+                                        }
+
                                         true
                                     } else {
                                         false
@@ -147,9 +193,75 @@ fun TransitMapScreen(
                         style = MaterialTheme.typography.bodyMedium
                     )
 
+                    Text(
+                        text = "קווים בתחנה",
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.padding(top = 12.dp, bottom = 6.dp)
+                    )
+
+                    when {
+                        isLoadingLines -> {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                CircularProgressIndicator()
+                                Text(
+                                    text = "טוען קווים...",
+                                    modifier = Modifier.padding(start = 12.dp)
+                                )
+                            }
+                        }
+
+                        linesError != null -> {
+                            Text(
+                                text = linesError ?: "",
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+
+                        selectedLines.isEmpty() -> {
+                            Text("לא נמצאו קווים לתחנה זו")
+                        }
+
+                        else -> {
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 4.dp)
+                            ) {
+                                items(
+                                    items = selectedLines,
+                                    key = { it.routeId }
+                                ) { line ->
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 5.dp)
+                                    ) {
+                                        Text(
+                                            text = "קו ${line.lineNumber}",
+                                            style = MaterialTheme.typography.bodyLarge
+                                        )
+
+                                        if (line.lineName.isNotBlank()) {
+                                            Text(
+                                                text = line.lineName,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     TextButton(
                         onClick = {
                             selectedStop = null
+                            selectedLines = emptyList()
+                            linesError = null
+                            isLoadingLines = false
                         },
                         modifier = Modifier.align(Alignment.End)
                     ) {

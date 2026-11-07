@@ -31,8 +31,7 @@ class TransitMyLocationControl(context: Context) {
     private val appContext = context.applicationContext
 
     private val locationManager =
-        appContext.getSystemService(Context.LOCATION_SERVICE)
-            as LocationManager
+        appContext.getSystemService(Context.LOCATION_SERVICE) as LocationManager
 
     fun hasLocationPermission(): Boolean {
         val fine = ContextCompat.checkSelfPermission(
@@ -51,65 +50,65 @@ class TransitMyLocationControl(context: Context) {
     fun hasLocationProvider(): Boolean {
         return try {
             locationManager.getProviders(true).any {
-                it == LocationManager.GPS_PROVIDER ||
-                    it == LocationManager.NETWORK_PROVIDER
+                it == LocationManager.GPS_PROVIDER || it == LocationManager.NETWORK_PROVIDER
             }
         } catch (_: Exception) {
             false
         }
     }
 
-    suspend fun moveToCurrentLocation(
-        map: MapLibreMap
-    ): Result<Location> {
+    suspend fun getCurrentLocation(): Result<Location> {
         return try {
             if (!hasLocationProvider()) {
-                throw IllegalStateException(
-                    "במכשיר זה לא זמינים שירותי מיקום. " +
-                        "אפשר להמשיך להשתמש באפליקציה ולהזין מוצא ויעד ידנית."
-                )
+                throw IllegalStateException("במכשיר זה לא זמינים שירותי מיקום.")
             }
 
             if (!hasLocationPermission()) {
-                throw SecurityException("לא ניתנה הרשאת מיקום")
+                throw SecurityException("לא ניתנה הרשאת מיקום.")
             }
 
-            val location = withTimeout(20_000L) {
+            val location = withTimeout(15_000L) {
                 requestLocation()
             }
 
             require(
-                location.latitude in -90.0..90.0 &&
-                    location.longitude in -180.0..180.0
+                location.latitude in -90.0..90.0 && location.longitude in -180.0..180.0
             ) {
                 "התקבל מיקום לא תקין"
             }
 
-            map.animateCamera(
-                CameraUpdateFactory.newCameraPosition(
-                    CameraPosition.Builder()
-                        .target(
-                            LatLng(
-                                location.latitude,
-                                location.longitude
-                            )
-                        )
-                        .zoom(15.0)
-                        .build()
-                )
-            )
-
-            addLocationMarker(
-                map = map,
-                latitude = location.latitude,
-                longitude = location.longitude
-            )
-
             Result.success(location)
-
-        } catch (exception: Exception) {
-            Result.failure(exception)
+        } catch (e: Exception) {
+            Result.failure(e)
         }
+    }
+
+    suspend fun moveToCurrentLocation(
+        map: MapLibreMap
+    ): Result<Location> {
+        val locationResult = getCurrentLocation()
+        if (locationResult.isFailure) {
+            return locationResult
+        }
+
+        val location = locationResult.getOrThrow()
+
+        map.animateCamera(
+            CameraUpdateFactory.newCameraPosition(
+                CameraPosition.Builder()
+                    .target(LatLng(location.latitude, location.longitude))
+                    .zoom(15.0)
+                    .build()
+            )
+        )
+
+        addLocationMarker(
+            map = map,
+            latitude = location.latitude,
+            longitude = location.longitude
+        )
+
+        return Result.success(location)
     }
 
     private fun addLocationMarker(
@@ -123,19 +122,13 @@ class TransitMyLocationControl(context: Context) {
                     Point.fromLngLat(longitude, latitude)
                 )
 
-                val collection = FeatureCollection.fromFeatures(
-                    arrayOf(feature)
-                )
+                val collection = FeatureCollection.fromFeatures(arrayOf(feature))
 
-                val existingSource =
-                    style.getSource(SOURCE_ID) as? GeoJsonSource
-
+                val existingSource = style.getSource(SOURCE_ID) as? GeoJsonSource
                 if (existingSource != null) {
                     existingSource.setGeoJson(collection)
                 } else {
-                    style.addSource(
-                        GeoJsonSource(SOURCE_ID, collection)
-                    )
+                    style.addSource(GeoJsonSource(SOURCE_ID, collection))
                 }
 
                 if (style.getLayer(LAYER_ID) == null) {
@@ -150,7 +143,6 @@ class TransitMyLocationControl(context: Context) {
                     )
                 }
             } catch (_: Exception) {
-                // כשל בסימון אינו אמור לפגוע במפה או בניווט.
             }
         }
     }
@@ -170,25 +162,16 @@ class TransitMyLocationControl(context: Context) {
             }
 
             val provider = when {
-                fineGranted &&
-                    LocationManager.GPS_PROVIDER in providers ->
-                    LocationManager.GPS_PROVIDER
-
-                LocationManager.NETWORK_PROVIDER in providers ->
-                    LocationManager.NETWORK_PROVIDER
-
+                fineGranted && LocationManager.GPS_PROVIDER in providers -> LocationManager.GPS_PROVIDER
+                LocationManager.NETWORK_PROVIDER in providers -> LocationManager.NETWORK_PROVIDER
                 else -> null
-            } ?: throw IllegalStateException(
-                "לא נמצא ספק מיקום המתאים להרשאות שניתנו"
-            )
+            } ?: throw IllegalStateException("לא נמצא ספק מיקום המתאים להרשאות שניתנו")
 
             val listener = object : LocationListener {
-
                 override fun onLocationChanged(location: Location) {
                     if (continuation.isActive) {
                         continuation.resume(location)
                     }
-
                     try {
                         locationManager.removeUpdates(this)
                     } catch (_: SecurityException) {
@@ -196,14 +179,8 @@ class TransitMyLocationControl(context: Context) {
                 }
 
                 @Deprecated("Deprecated by Android")
-                override fun onStatusChanged(
-                    provider: String?,
-                    status: Int,
-                    extras: android.os.Bundle?
-                ) = Unit
-
+                override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) = Unit
                 override fun onProviderEnabled(provider: String) = Unit
-
                 override fun onProviderDisabled(provider: String) = Unit
             }
 

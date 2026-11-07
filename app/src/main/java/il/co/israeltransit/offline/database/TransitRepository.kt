@@ -1,7 +1,10 @@
-
 package il.co.israeltransit.offline.database
 
 import android.database.sqlite.SQLiteDatabase
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 class TransitRepository(
     private val databaseProvider: TransitDatabase
@@ -9,7 +12,7 @@ class TransitRepository(
 
     data class TransitLine(
         val routeId: String,
-        val number: String,
+        val lineNumber: String,
         val name: String,
         val agencyId: String,
         val agencyName: String,
@@ -44,7 +47,7 @@ class TransitRepository(
                         add(
                             TransitLine(
                                 routeId = cursor.getString(0) ?: "",
-                                number = cursor.getString(1) ?: "",
+                                lineNumber = cursor.getString(1) ?: "",
                                 name = cursor.getString(2) ?: "",
                                 agencyId = cursor.getString(3) ?: "",
                                 agencyName = cursor.getString(4) ?: "",
@@ -150,10 +153,8 @@ class TransitRepository(
                             TransitStop(
                                 stopId = cursor.getString(0) ?: "",
                                 name = cursor.getString(1) ?: "",
-                                latitude = if (cursor.isNull(2)) null
-                                    else cursor.getDouble(2),
-                                longitude = if (cursor.isNull(3)) null
-                                    else cursor.getDouble(3)
+                                latitude = if (cursor.isNull(2)) null else cursor.getDouble(2),
+                                longitude = if (cursor.isNull(3)) null else cursor.getDouble(3)
                             )
                         )
                     }
@@ -162,6 +163,78 @@ class TransitRepository(
         } finally {
             db.close()
         }
+    }
+
+    /**
+     * איתור התחנה הקרובה ביותר לקואורדינטות נתונות
+     */
+    fun findNearestStop(
+        latitude: Double,
+        longitude: Double,
+        maxDistanceMeters: Double = 3000.0
+    ): TransitStop? {
+        val db = databaseProvider.openReadOnly() ?: return null
+        val deltaLat = maxDistanceMeters / 111000.0
+        val cosLat = cos(Math.toRadians(latitude)).coerceAtLeast(0.1)
+        val deltaLon = maxDistanceMeters / (111000.0 * cosLat)
+
+        return try {
+            db.rawQuery(
+                """
+                SELECT
+                    stop_id,
+                    COALESCE(stop_name, ''),
+                    stop_lat,
+                    stop_lon
+                FROM stops
+                WHERE stop_lat BETWEEN ? AND ?
+                  AND stop_lon BETWEEN ? AND ?
+                LIMIT 60
+                """.trimIndent(),
+                arrayOf(
+                    (latitude - deltaLat).toString(),
+                    (latitude + deltaLat).toString(),
+                    (longitude - deltaLon).toString(),
+                    (longitude + deltaLon).toString()
+                )
+            ).use { cursor ->
+                var closestStop: TransitStop? = null
+                var minDistance = Double.MAX_VALUE
+
+                while (cursor.moveToNext()) {
+                    if (cursor.isNull(2) || cursor.isNull(3)) continue
+                    val sLat = cursor.getDouble(2)
+                    val sLon = cursor.getDouble(3)
+                    val dist = haversineMeters(latitude, longitude, sLat, sLon)
+                    if (dist < minDistance && dist <= maxDistanceMeters) {
+                        minDistance = dist
+                        closestStop = TransitStop(
+                            stopId = cursor.getString(0) ?: "",
+                            name = cursor.getString(1) ?: "",
+                            latitude = sLat,
+                            longitude = sLon
+                        )
+                    }
+                }
+                closestStop
+            }
+        } finally {
+            db.close()
+        }
+    }
+
+    private fun haversineMeters(
+        lat1: Double, lon1: Double,
+        lat2: Double, lon2: Double
+    ): Double {
+        val earthRadius = 6371000.0
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val a = sin(dLat / 2).let { it * it } +
+                cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) *
+                sin(dLon / 2).let { it * it }
+        val c = 2.0 * atan2(sqrt(a), sqrt(1.0 - a))
+        return earthRadius * c
     }
 
     fun getStopsForLine(
@@ -206,10 +279,8 @@ class TransitRepository(
                                 stopId = cursor.getString(0) ?: "",
                                 name = cursor.getString(1) ?: "",
                                 sequence = cursor.getInt(2),
-                                arrivalTime = if (cursor.isNull(3)) null
-                                    else cursor.getInt(3),
-                                departureTime = if (cursor.isNull(4)) null
-                                    else cursor.getInt(4)
+                                arrivalTime = if (cursor.isNull(3)) null else cursor.getInt(3),
+                                departureTime = if (cursor.isNull(4)) null else cursor.getInt(4)
                             )
                         )
                     }
@@ -254,7 +325,7 @@ class TransitRepository(
                         add(
                             TransitLine(
                                 routeId = cursor.getString(0) ?: "",
-                                number = cursor.getString(1) ?: "",
+                                lineNumber = cursor.getString(1) ?: "",
                                 name = cursor.getString(2) ?: "",
                                 agencyId = cursor.getString(3) ?: "",
                                 agencyName = cursor.getString(4) ?: "",

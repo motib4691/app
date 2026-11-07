@@ -42,6 +42,7 @@ import il.co.israeltransit.offline.schedule.TransitScheduleRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.time.format.DateTimeFormatter
 
 private data class RouteVariant(
@@ -373,7 +374,7 @@ fun StopSearchScreen(
         val stop = viewingMapForStop!!
         val lat = stop.latitude ?: 31.7683
         val lon = stop.longitude ?: 35.2137
-        val mapFile = mapStorage.getMapFile()
+        val mapFile: File = mapStorage.getMapFile()
 
         Column(modifier = Modifier.fillMaxSize()) {
             Surface(
@@ -513,7 +514,6 @@ fun StopSearchScreen(
             )
             Text("מספר תחנה: ${stop.stopId}")
 
-            // כפתורי פעולה מהירים: תכנון מסלול ומפה
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)

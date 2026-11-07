@@ -21,10 +21,8 @@ class TransitRouteEngine(
         private const val MAX_CACHED_PATTERN_RUNS = 6
         private const val MAX_JOURNEY_MINUTES = 720L
         const val DEFAULT_MINIMUM_TRANSFER_MINUTES = 2L
+        const val MAX_WALK_TRANSFER_DISTANCE_METERS = 350.0
 
-        /**
-         * חישוב מרחק אווירי במטרים בין שתי נקודות גאוגרפיות
-         */
         fun calculateDistanceMeters(
             lat1: Double?, lon1: Double?,
             lat2: Double?, lon2: Double?
@@ -40,9 +38,6 @@ class TransitRouteEngine(
             return earthRadius * c
         }
 
-        /**
-         * הערכת זמן הליכה בדקות לפי קצב הליכה ממוצע (כ-70 מטרים לדקה)
-         */
         fun estimateWalkingMinutes(distanceMeters: Double?): Long {
             if (distanceMeters == null || distanceMeters <= 0.0) return 0L
             return ceil(distanceMeters / 70.0).toLong().coerceAtLeast(1L)
@@ -128,6 +123,13 @@ class TransitRouteEngine(
         val leg: RouteLeg?
     )
 
+    private data class NearbyStop(
+        val stopId: String,
+        val stopName: String,
+        val distanceMeters: Double,
+        val walkMinutes: Long
+    )
+
     private val weekdayColumns = listOf(
         "monday",
         "tuesday",
@@ -156,41 +158,26 @@ class TransitRouteEngine(
     ): SearchResult {
 
         if (originStopId.isBlank() || destinationStopId.isBlank()) {
-            return SearchResult(
-                emptyList(),
-                "יש לבחור תחנת מוצא ותחנת יעד."
-            )
+            return SearchResult(emptyList(), "יש לבחור תחנת מוצא ותחנת יעד.")
         }
 
         if (originStopId == destinationStopId) {
-            return SearchResult(
-                emptyList(),
-                "תחנת המוצא ותחנת היעד זהות."
-            )
+            return SearchResult(emptyList(), "תחנת המוצא ותחנת היעד זהות.")
         }
 
         if (maxTransfers !in 0..MAX_ALLOWED_TRANSFERS) {
-            return SearchResult(
-                emptyList(),
-                "מספר ההחלפות המבוקש אינו תקין (0 עד $MAX_ALLOWED_TRANSFERS)."
-            )
+            return SearchResult(emptyList(), "מספר ההחלפות המבוקש אינו תקין (0 עד $MAX_ALLOWED_TRANSFERS).")
         }
 
         if (maxResults !in 1..20) {
-            return SearchResult(
-                emptyList(),
-                "מספר התוצאות המבוקש אינו תקין."
-            )
+            return SearchResult(emptyList(), "מספר התוצאות המבוקש אינו תקין.")
         }
 
         val effectiveMaxTransfers = maxTransfers.coerceIn(0, MAX_ALLOWED_TRANSFERS)
         val effectiveBufferMinutes = minimumTransferMinutes.coerceAtLeast(1L)
 
         val db = databaseProvider.openReadOnly()
-            ?: return SearchResult(
-                emptyList(),
-                "לא נמצא מסד נתונים. יש לייבא תחילה את קובץ הנתונים במסך עדכון נתונים."
-            )
+            ?: return SearchResult(emptyList(), "לא נמצא מסד נתונים. יש לייבא תחילה את קובץ הנתונים במסך עדכון נתונים.")
 
         return try {
             val loaded = loadPatterns(db)
@@ -198,24 +185,15 @@ class TransitRouteEngine(
             val positionsByStop = loaded.second
 
             if (patternsById.isEmpty()) {
-                return SearchResult(
-                    emptyList(),
-                    "לא נמצאו נתוני מסלולים במאגר. יש לייבא קובץ נתונים תקין."
-                )
+                return SearchResult(emptyList(), "לא נמצאו נתוני מסלולים במאגר. יש לייבא קובץ נתונים תקין.")
             }
 
             if (originStopId !in positionsByStop) {
-                return SearchResult(
-                    emptyList(),
-                    "תחנת המוצא אינה מופיעה במסלולי התחבורה."
-                )
+                return SearchResult(emptyList(), "תחנת המוצא אינה מופיעה במסלולי התחבורה.")
             }
 
             if (destinationStopId !in positionsByStop) {
-                return SearchResult(
-                    emptyList(),
-                    "תחנת היעד אינה מופיעה במסלולי התחבורה."
-                )
+                return SearchResult(emptyList(), "תחנת היעד אינה מופיעה במסלולי התחבורה.")
             }
 
             calculateJourneys(
@@ -230,12 +208,73 @@ class TransitRouteEngine(
                 maxResults = maxResults
             )
         } catch (e: Exception) {
-            SearchResult(
-                emptyList(),
-                "אירעה שגיאה בחישוב המסלול: " + (e.message ?: "שגיאה לא ידועה")
-            )
+            SearchResult(emptyList(), "אירעה שגיאה בחישוב המסלול: " + (e.message ?: "שגיאה לא ידועה"))
         } finally {
             db.close()
+        }
+    }
+
+    private fun getNearbyStops(
+        db: SQLiteDatabase,
+        stopId: String,
+        cache: MutableMap<String, List<NearbyStop>>,
+        maxDistanceMeters: Double = MAX_WALK_TRANSFER_DISTANCE_METERS
+    ): List<NearbyStop> {
+        return cache.getOrPut(stopId) {
+            val coords = db.rawQuery(
+                "SELECT stop_lat, stop_lon FROM stops WHERE stop_id = ? AND stop_lat IS NOT NULL AND stop_lon IS NOT NULL LIMIT 1",
+                arrayOf(stopId)
+            ).use { cursor ->
+                if (cursor.moveToFirst() && !cursor.isNull(0) && !cursor.isNull(1)) {
+                    Pair(cursor.getDouble(0), cursor.getDouble(1))
+                } else null
+            } ?: return@getOrPut emptyList()
+
+            val lat = coords.first
+            val lon = coords.second
+            if (lat !in -90.0..90.0 || lon !in -180.0..180.0) return@getOrPut emptyList()
+
+            val deltaLat = maxDistanceMeters / 111000.0
+            val cosLat = cos(Math.toRadians(lat)).coerceAtLeast(0.1)
+            val deltaLon = maxDistanceMeters / (111000.0 * cosLat)
+
+            db.rawQuery(
+                """
+                SELECT stop_id, COALESCE(stop_name, ''), stop_lat, stop_lon
+                FROM stops
+                WHERE stop_id != ?
+                  AND stop_lat BETWEEN ? AND ?
+                  AND stop_lon BETWEEN ? AND ?
+                LIMIT 15
+                """.trimIndent(),
+                arrayOf(
+                    stopId,
+                    (lat - deltaLat).toString(),
+                    (lat + deltaLat).toString(),
+                    (lon - deltaLon).toString(),
+                    (lon + deltaLon).toString()
+                )
+            ).use { cursor ->
+                val list = mutableListOf<NearbyStop>()
+                while (cursor.moveToNext()) {
+                    val nId = cursor.getString(0) ?: continue
+                    val nName = cursor.getString(1) ?: ""
+                    val nLat = cursor.getDouble(2)
+                    val nLon = cursor.getDouble(3)
+                    val dist = calculateDistanceMeters(lat, lon, nLat, nLon) ?: continue
+                    if (dist <= maxDistanceMeters) {
+                        list.add(
+                            NearbyStop(
+                                stopId = nId,
+                                stopName = nName,
+                                distanceMeters = dist,
+                                walkMinutes = estimateWalkingMinutes(dist)
+                            )
+                        )
+                    }
+                }
+                list.sortedBy { it.distanceMeters }.take(6)
+            }
         }
     }
 
@@ -293,12 +332,7 @@ class TransitRouteEngine(
             stopIds.forEachIndexed { index, stopId ->
                 positionsByStop
                     .getOrPut(stopId) { mutableListOf() }
-                    .add(
-                        BoardPosition(
-                            patternId = patternId,
-                            index = index
-                        )
-                    )
+                    .add(BoardPosition(patternId = patternId, index = index))
             }
         }
 
@@ -318,6 +352,7 @@ class TransitRouteEngine(
     ): SearchResult {
 
         var previousRound = mutableMapOf<String, MutableList<Label>>()
+        val nearbyStopsCache = mutableMapOf<String, List<NearbyStop>>()
 
         previousRound[originStopId] = mutableListOf(
             Label(
@@ -380,18 +415,35 @@ class TransitRouteEngine(
             val boardPositionsByPattern = mutableMapOf<Int, MutableList<BoardingCandidate>>()
 
             for ((stopId, labels) in previousRound) {
-                val positions = positionsByStop[stopId].orEmpty()
+                // בדיקת עלייה באותה תחנה וגם בתחנות סמוכות בטווח הליכה (רק בהחלפה מסיבוב 2 ואילך)
+                val stopsToExpand = mutableListOf<Pair<String, Long>>()
+                stopsToExpand.add(stopId to 0L)
 
-                for (label in labels) {
-                    for (position in positions) {
-                        val pattern = patternsById[position.patternId] ?: continue
+                if (round > 1) {
+                    val nearby = getNearbyStops(db, stopId, nearbyStopsCache)
+                    for (ns in nearby) {
+                        stopsToExpand.add(ns.stopId to ns.walkMinutes)
+                    }
+                }
 
-                        if (position.index >= pattern.stops.lastIndex) continue
-                        if (pattern.stops[position.index] != stopId) continue
+                for ((targetStopId, walkMinutes) in stopsToExpand) {
+                    val positions = positionsByStop[targetStopId].orEmpty()
+                    for (label in labels) {
+                        for (position in positions) {
+                            val pattern = patternsById[position.patternId] ?: continue
+                            if (position.index >= pattern.stops.lastIndex) continue
+                            if (pattern.stops[position.index] != targetStopId) continue
 
-                        boardPositionsByPattern
-                            .getOrPut(position.patternId) { mutableListOf() }
-                            .add(BoardingCandidate(index = position.index, label = label))
+                            val candidateLabel = if (walkMinutes > 0) {
+                                label.copy(arrivalAt = label.arrivalAt.plusMinutes(walkMinutes))
+                            } else {
+                                label
+                            }
+
+                            boardPositionsByPattern
+                                .getOrPut(position.patternId) { mutableListOf() }
+                                .add(BoardingCandidate(index = position.index, label = candidateLabel))
+                        }
                     }
                 }
             }
@@ -502,7 +554,23 @@ class TransitRouteEngine(
                 }
             }
 
-            val destinationLabels = nextRound[destinationStopId].orEmpty()
+            // בדיקת הגעה ליעד – ישירות או בהליכה מסכמת קצרה (עד 350 מ') מתחנה קרובה ליעד
+            val destinationLabels = nextRound[destinationStopId].orEmpty().toMutableList()
+
+            for ((stopId, labels) in nextRound) {
+                if (stopId != destinationStopId) {
+                    val nearby = getNearbyStops(db, stopId, nearbyStopsCache)
+                    val targetMatch = nearby.firstOrNull { it.stopId == destinationStopId }
+                    if (targetMatch != null) {
+                        for (l in labels) {
+                            destinationLabels.add(
+                                l.copy(arrivalAt = l.arrivalAt.plusMinutes(targetMatch.walkMinutes))
+                            )
+                        }
+                    }
+                }
+            }
+
             for (destinationLabel in destinationLabels) {
                 val journey = buildJourney(destinationLabel)
                 if (journey.legs.isNotEmpty() && journey.transfers <= maxTransfers) {

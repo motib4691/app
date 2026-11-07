@@ -140,9 +140,10 @@ fun TransitMapScreen(
 
             map.getStyle { style ->
                 TransitStopMapLayer.install(
-                    context = applicationContext,
-                    style = style,
-                    onComplete = {
+    context = applicationContext,
+    style = style,
+    map = map,
+    onComplete = {
                         val clickListener =
                             MapLibreMap.OnMapClickListener { coordinate ->
 

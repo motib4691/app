@@ -148,12 +148,22 @@ fun TransitMapScreen(
                             MapLibreMap.OnMapClickListener { coordinate ->
 
                                 val screenPoint =
-                                    map.projection.toScreenLocation(coordinate)
+    map.projection.toScreenLocation(coordinate)
 
-                                val features = map.queryRenderedFeatures(
-                                    screenPoint,
-                                    STOP_LAYER_ID
-                                )
+if (
+    TransitMapClusterController.handleClusterTap(
+        map = map,
+        style = style,
+        screenPoint = screenPoint
+    )
+) {
+    return@OnMapClickListener true
+}
+
+val features = map.queryRenderedFeatures(
+    screenPoint,
+    STOP_LAYER_ID
+)
 
                                 val feature = features.firstOrNull()
 

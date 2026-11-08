@@ -49,11 +49,13 @@ class TransitSettings(context: Context) {
         private const val PREFERENCES_NAME = "israel_transit_settings"
         private const val KEY_MAX_TRANSFERS = "max_transfers"
         private const val KEY_MIN_TRANSFER_MINUTES = "min_transfer_minutes"
+        private const val KEY_ALLOW_WALKING_TRANSFERS = "allow_walking_transfers"
         private const val KEY_THEME_MODE = "theme_mode"
         private const val KEY_COLOR_THEME = "color_theme"
 
         const val DEFAULT_MAX_TRANSFERS = 3
         const val DEFAULT_MIN_TRANSFER_MINUTES = 2
+        const val DEFAULT_ALLOW_WALKING_TRANSFERS = true
     }
 
     var maxTransfers: Int
@@ -66,6 +68,12 @@ class TransitSettings(context: Context) {
         get() = preferences.getInt(KEY_MIN_TRANSFER_MINUTES, DEFAULT_MIN_TRANSFER_MINUTES).coerceIn(1, 15)
         set(value) {
             preferences.edit().putInt(KEY_MIN_TRANSFER_MINUTES, value.coerceIn(1, 15)).apply()
+        }
+
+    var allowWalkingTransfers: Boolean
+        get() = preferences.getBoolean(KEY_ALLOW_WALKING_TRANSFERS, DEFAULT_ALLOW_WALKING_TRANSFERS)
+        set(value) {
+            preferences.edit().putBoolean(KEY_ALLOW_WALKING_TRANSFERS, value).apply()
         }
 
     var themeMode: AppThemeMode

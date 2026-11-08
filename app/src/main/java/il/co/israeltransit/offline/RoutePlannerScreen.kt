@@ -55,6 +55,25 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
+import org.maplibre.android.camera.CameraUpdateFactory
+import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.geometry.LatLngBounds
+import org.maplibre.android.style.expressions.Expression
+import org.maplibre.android.style.layers.CircleLayer
+import org.maplibre.android.style.layers.LineLayer
+import org.maplibre.android.style.layers.PropertyFactory.circleColor
+import org.maplibre.android.style.layers.PropertyFactory.circleRadius
+import org.maplibre.android.style.layers.PropertyFactory.circleStrokeColor
+import org.maplibre.android.style.layers.PropertyFactory.circleStrokeWidth
+import org.maplibre.android.style.layers.PropertyFactory.lineCap
+import org.maplibre.android.style.layers.PropertyFactory.lineColor
+import org.maplibre.android.style.layers.PropertyFactory.lineJoin
+import org.maplibre.android.style.layers.PropertyFactory.lineWidth
+import org.maplibre.android.style.sources.GeoJsonSource
+import org.maplibre.geojson.Feature
+import org.maplibre.geojson.FeatureCollection
+import org.maplibre.geojson.LineString
+import org.maplibre.geojson.Point
 import java.io.File
 import java.time.Duration
 import java.time.LocalDateTime
@@ -281,6 +300,7 @@ fun RoutePlannerScreen(
         }
     }
 
+    // תצוגת מפה ממוקדת ומסומנת עם כל תחנות ומסלול הנסיעה
     if (journeyForMap != null) {
         val journey = journeyForMap!!
         val firstLeg = journey.legs.firstOrNull()
@@ -305,7 +325,8 @@ fun RoutePlannerScreen(
                         Text(
                             text = "מפת המסלול הנבחר",
                             fontWeight = FontWeight.Bold,
-                            fontSize = 18.sp
+                            fontSize = 18.sp,
+                            color = MaterialTheme.colorScheme.primary
                         )
                         Text(
                             text = "${journey.departureAt.format(plannerTimeFormatter)} – ${journey.arrivalAt.format(plannerTimeFormatter)} (${journey.durationMinutes} דק')",
@@ -330,7 +351,78 @@ fun RoutePlannerScreen(
                     modifier = Modifier.fillMaxSize(),
                     initialLatitude = initialLat,
                     initialLongitude = initialLon,
-                    initialZoom = 13.0
+                    initialZoom = 13.0,
+                    onMapReady = { map ->
+                        map.getStyle { style ->
+                            val validCoords = buildList {
+                                journey.legs.forEach { leg ->
+                                    if (leg.fromLat != null && leg.fromLon != null) add(LatLng(leg.fromLat, leg.fromLon))
+                                    if (leg.toLat != null && leg.toLon != null) add(LatLng(leg.toLat, leg.toLon))
+                                }
+                            }
+
+                            if (validCoords.isNotEmpty()) {
+                                val boundsBuilder = LatLngBounds.Builder()
+                                validCoords.forEach { boundsBuilder.include(it) }
+
+                                try {
+                                    map.easeCamera(
+                                        CameraUpdateFactory.newLatLngBounds(boundsBuilder.build(), 120),
+                                        1200
+                                    )
+                                } catch (_: Exception) {
+                                    map.easeCamera(CameraUpdateFactory.newLatLngZoom(validCoords.first(), 14.0))
+                                }
+
+                                val linePoints = validCoords.map { Point.fromLngLat(it.longitude, it.latitude) }
+                                if (linePoints.size >= 2) {
+                                    val lineString = LineString.fromLngLats(linePoints)
+                                    val lineSourceId = "journey-path-source"
+                                    val lineLayerId = "journey-path-layer"
+
+                                    if (style.getLayer(lineLayerId) != null) style.removeLayer(lineLayerId)
+                                    if (style.getSource(lineSourceId) != null) style.removeSource(lineSourceId)
+
+                                    style.addSource(GeoJsonSource(lineSourceId, Feature.fromGeometry(lineString)))
+                                    style.addLayer(
+                                        LineLayer(lineLayerId, lineSourceId).withProperties(
+                                            lineColor("#1769AA"),
+                                            lineWidth(4.5f),
+                                            lineCap("round"),
+                                            lineJoin("round")
+                                        )
+                                    )
+                                }
+
+                                val stopFeatures = validCoords.mapIndexed { idx, coord ->
+                                    val color = when (idx) {
+                                        0 -> "#2E7D32"              // ירוק לתחנת מוצא
+                                        validCoords.lastIndex -> "#C62828" // אדום לתחנת יעד
+                                        else -> "#EF6C00"           // כתום לתחנות החלפה
+                                    }
+                                    val f = Feature.fromGeometry(Point.fromLngLat(coord.longitude, coord.latitude))
+                                    f.addStringProperty("marker_color", color)
+                                    f
+                                }
+
+                                val stopsSourceId = "journey-stops-source"
+                                val stopsLayerId = "journey-stops-layer"
+
+                                if (style.getLayer(stopsLayerId) != null) style.removeLayer(stopsLayerId)
+                                if (style.getSource(stopsSourceId) != null) style.removeSource(stopsSourceId)
+
+                                style.addSource(GeoJsonSource(stopsSourceId, FeatureCollection.fromFeatures(stopFeatures)))
+                                style.addLayer(
+                                    CircleLayer(stopsLayerId, stopsSourceId).withProperties(
+                                        circleColor(Expression.get("marker_color")),
+                                        circleRadius(7.5f),
+                                        circleStrokeColor("#FFFFFF"),
+                                        circleStrokeWidth(2.5f)
+                                    )
+                                )
+                            }
+                        }
+                    }
                 )
 
                 Card(
@@ -348,7 +440,7 @@ fun RoutePlannerScreen(
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Text(
-                            text = "תחנות המסלול:",
+                            text = "שלבי המסלול:",
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary
                         )
@@ -356,6 +448,14 @@ fun RoutePlannerScreen(
                             Text(
                                 text = "${idx + 1}. קו ${leg.lineNumber}: מ-${leg.fromStopName} ל-${leg.toStopName}",
                                 style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        journey.finalWalk?.let { walk ->
+                            Text(
+                                text = "הליכה מסכמת: כ-${walk.distanceMeters.roundToInt()} מ' אל ${walk.toStopName}",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.secondary
                             )
                         }
                     }
@@ -764,6 +864,7 @@ fun RoutePlannerScreen(
                                         }
                                     }
 
+                                    // פירוט הליכה והמתנה בין נסיעות
                                     if (legIndex < journey.legs.lastIndex) {
                                         val nextLeg = journey.legs[legIndex + 1]
                                         val waitMinutes = Duration.between(leg.arrivalAt, nextLeg.departureAt).toMinutes()
@@ -812,6 +913,28 @@ fun RoutePlannerScreen(
                                                     )
                                                 }
                                             }
+                                        }
+                                    }
+                                }
+
+                                // פירוט הליכה מסכמת אל תחנת היעד (אם קיימת)
+                                journey.finalWalk?.let { walk ->
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.12f),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(modifier = Modifier.padding(10.dp)) {
+                                            Text(
+                                                "הליכה מסכמת אל היעד",
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.secondary
+                                            )
+                                            Text(
+                                                "הליכה של כ-${walk.distanceMeters.roundToInt()} מטרים (כ-${walk.walkMinutes} דקות) מ־${walk.fromStopName} אל ${walk.toStopName}",
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
                                         }
                                     }
                                 }

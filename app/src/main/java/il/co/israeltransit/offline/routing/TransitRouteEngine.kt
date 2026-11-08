@@ -180,6 +180,7 @@ class TransitRouteEngine(
         departureTime: LocalDateTime = LocalDateTime.now(),
         maxTransfers: Int = 3,
         minimumTransferMinutes: Long = DEFAULT_MINIMUM_TRANSFER_MINUTES,
+        allowWalkingTransfers: Boolean = true,
         maxResults: Int = 5
     ): SearchResult {
 
@@ -231,6 +232,7 @@ class TransitRouteEngine(
                 departureTime = departureTime,
                 maxTransfers = effectiveMaxTransfers,
                 minimumTransferMinutes = effectiveBufferMinutes,
+                allowWalkingTransfers = allowWalkingTransfers,
                 maxResults = maxResults
             )
         } catch (e: Exception) {
@@ -269,7 +271,6 @@ class TransitRouteEngine(
             val minLon = (lon - deltaLon).toString()
             val maxLon = (lon + deltaLon).toString()
 
-            // מיון מרחבי ישיר ב-SQL המבטיח שהתחנות הקרובות ביותר יוחזרו תמיד
             val sql = """
                 SELECT stop_id, COALESCE(stop_name, ''), stop_lat, stop_lon
                 FROM stops
@@ -383,6 +384,7 @@ class TransitRouteEngine(
         departureTime: LocalDateTime,
         maxTransfers: Int,
         minimumTransferMinutes: Long,
+        allowWalkingTransfers: Boolean,
         maxResults: Int
     ): SearchResult {
 
@@ -453,7 +455,8 @@ class TransitRouteEngine(
                 val stopsToExpand = mutableListOf<Pair<String, Long>>()
                 stopsToExpand.add(stopId to 0L)
 
-                if (round > 1) {
+                // איתור תחנות סמוכות בטווח הליכה מתבצע רק אם המשתמש אפשר זאת
+                if (round > 1 && allowWalkingTransfers) {
                     val nearby = getNearbyStops(db, stopId, nearbyStopsCache)
                     for (ns in nearby) {
                         stopsToExpand.add(ns.stopId to ns.walkMinutes)
@@ -588,32 +591,35 @@ class TransitRouteEngine(
                 }
             }
 
-            // מציאת תוויות שהגיעו ליעד (ישירות או בהליכה מסיימת מתחנה סמוכה)
+            // מציאת תוויות שהגיעו ליעד
             val destinationCandidates = mutableListOf<Pair<Label, FinalWalk?>>()
 
             for (l in nextRound[destinationStopId].orEmpty()) {
                 destinationCandidates.add(l to null)
             }
 
-            for ((stopId, labels) in nextRound) {
-                if (stopId != destinationStopId) {
-                    val nearby = getNearbyStops(db, stopId, nearbyStopsCache)
-                    val targetMatch = nearby.firstOrNull { it.stopId == destinationStopId }
-                    if (targetMatch != null) {
-                        val fromStopName = labels.firstOrNull()?.leg?.toStopName ?: stopId
-                        val finalWalk = FinalWalk(
-                            fromStopId = stopId,
-                            fromStopName = fromStopName,
-                            toStopId = targetMatch.stopId,
-                            toStopName = targetMatch.stopName,
-                            distanceMeters = targetMatch.distanceMeters,
-                            walkMinutes = targetMatch.walkMinutes
-                        )
-                        for (l in labels) {
-                            val updatedLabel = l.copy(
-                                arrivalAt = l.arrivalAt.plusMinutes(targetMatch.walkMinutes)
+            // הליכה מסכמת לתחנת היעד מתאפשרת רק אם המשתמש לא חסם הליכה בין תחנות
+            if (allowWalkingTransfers) {
+                for ((stopId, labels) in nextRound) {
+                    if (stopId != destinationStopId) {
+                        val nearby = getNearbyStops(db, stopId, nearbyStopsCache)
+                        val targetMatch = nearby.firstOrNull { it.stopId == destinationStopId }
+                        if (targetMatch != null) {
+                            val fromStopName = labels.firstOrNull()?.leg?.toStopName ?: stopId
+                            val finalWalk = FinalWalk(
+                                fromStopId = stopId,
+                                fromStopName = fromStopName,
+                                toStopId = targetMatch.stopId,
+                                toStopName = targetMatch.stopName,
+                                distanceMeters = targetMatch.distanceMeters,
+                                walkMinutes = targetMatch.walkMinutes
                             )
-                            destinationCandidates.add(updatedLabel to finalWalk)
+                            for (l in labels) {
+                                val updatedLabel = l.copy(
+                                    arrivalAt = l.arrivalAt.plusMinutes(targetMatch.walkMinutes)
+                                )
+                                destinationCandidates.add(updatedLabel to finalWalk)
+                            }
                         }
                     }
                 }
@@ -648,6 +654,8 @@ class TransitRouteEngine(
         return if (journeys.isEmpty()) {
             val message = if (maxTransfers == 0) {
                 "לא נמצאו קווים ישירים בין התחנות. אפשר לאפשר החלפות במסך ההגדרות."
+            } else if (!allowWalkingTransfers) {
+                "לא נמצא מסלול מתאים ללא הליכה בין תחנות (עד $maxTransfers החלפות). באפשרותך לאפשר הליכה בהגדרות."
             } else {
                 "לא נמצא מסלול מתאים במועד המבוקש (עד $maxTransfers החלפות)."
             }
@@ -703,7 +711,6 @@ class TransitRouteEngine(
 
         val builders = LinkedHashMap<String, RunBuilder>()
 
-        // שילוב מלא ותקני של calendar_dates (חגים, חריגים וביטולים)
         val sql = if (hasCalendarDates(db)) {
             """
             SELECT

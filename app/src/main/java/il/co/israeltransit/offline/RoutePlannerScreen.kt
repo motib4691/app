@@ -280,6 +280,7 @@ fun RoutePlannerScreen(
         val requestedDepartureTime = departureTime
         val maxTransfers = settings.maxTransfers
         val minBufferMinutes = settings.minTransferMinutes.toLong()
+        val allowWalking = settings.allowWalkingTransfers
 
         calculating = true
         routeResult = null
@@ -292,6 +293,7 @@ fun RoutePlannerScreen(
                     departureTime = requestedDepartureTime,
                     maxTransfers = maxTransfers,
                     minimumTransferMinutes = minBufferMinutes,
+                    allowWalkingTransfers = allowWalking,
                     maxResults = 5
                 )
             }
@@ -473,7 +475,7 @@ fun RoutePlannerScreen(
                 Text(
                     "קובץ המפה לא הותקן עדיין במכשיר.\n\n" +
                     "תכנון הנסיעה, זמני ההמתנה וזמני ההליכה המלאים פועלים ומוצגים כאן ברשימה גם ללא מפה.\n\n" +
-                    "כדי לצפות במסלול על גבי מפה וקטורית, תוכל לייבא קובץ מפה במסך 'מפה לא מקוונת'."
+                    "כדי לצxxx xxxxxx על גבי מפה וקטורית, תוכל לייבא קובץ מפה במסך 'מפה לא מקוונת'."
                 )
             },
             confirmButton = {
@@ -507,6 +509,8 @@ fun RoutePlannerScreen(
             }
         }
 
+        // פס מידע על הגדרות החיפוש הפעילות
+        val walkingNote = if (!settings.allowWalkingTransfers) " | החלפה באותה תחנה בלבד" else ""
         Surface(
             shape = RoundedCornerShape(8.dp),
             color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
@@ -521,7 +525,7 @@ fun RoutePlannerScreen(
             ) {
                 Text(
                     text = if (settings.maxTransfers == 0) "חיפוש קווים ישירים בלבד"
-                           else "עד ${settings.maxTransfers} החלפות | מרווח ביטחון: ${settings.minTransferMinutes} דק'",
+                           else "עד ${settings.maxTransfers} החלפות | מרווח: ${settings.minTransferMinutes} דק'$walkingNote",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.Medium

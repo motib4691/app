@@ -63,12 +63,22 @@ class TransitRouteEngine(
         val arrivalAt: LocalDateTime
     )
 
+    data class FinalWalk(
+        val fromStopId: String,
+        val fromStopName: String,
+        val toStopId: String,
+        val toStopName: String,
+        val distanceMeters: Double,
+        val walkMinutes: Long
+    )
+
     data class Journey(
         val legs: List<RouteLeg>,
         val departureAt: LocalDateTime,
         val arrivalAt: LocalDateTime,
         val durationMinutes: Long,
-        val transfers: Int
+        val transfers: Int,
+        val finalWalk: FinalWalk? = null
     )
 
     data class SearchResult(
@@ -129,6 +139,22 @@ class TransitRouteEngine(
         val distanceMeters: Double,
         val walkMinutes: Long
     )
+
+    private var calendarDatesTableExists: Boolean? = null
+
+    private fun hasCalendarDates(db: SQLiteDatabase): Boolean {
+        if (calendarDatesTableExists == null) {
+            calendarDatesTableExists = try {
+                db.rawQuery(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='calendar_dates'",
+                    null
+                ).use { it.moveToFirst() }
+            } catch (_: Exception) {
+                false
+            }
+        }
+        return calendarDatesTableExists == true
+    }
 
     private val weekdayColumns = listOf(
         "monday",
@@ -238,21 +264,30 @@ class TransitRouteEngine(
             val cosLat = cos(Math.toRadians(lat)).coerceAtLeast(0.1)
             val deltaLon = maxDistanceMeters / (111000.0 * cosLat)
 
-            db.rawQuery(
-                """
+            val minLat = (lat - deltaLat).toString()
+            val maxLat = (lat + deltaLat).toString()
+            val minLon = (lon - deltaLon).toString()
+            val maxLon = (lon + deltaLon).toString()
+
+            // מיון מרחבי ישיר ב-SQL המבטיח שהתחנות הקרובות ביותר יוחזרו תמיד
+            val sql = """
                 SELECT stop_id, COALESCE(stop_name, ''), stop_lat, stop_lon
                 FROM stops
                 WHERE stop_id != ?
                   AND stop_lat BETWEEN ? AND ?
                   AND stop_lon BETWEEN ? AND ?
-                LIMIT 15
-                """.trimIndent(),
+                ORDER BY ((stop_lat - ?) * (stop_lat - ?) + (stop_lon - ?) * (stop_lon - ?)) ASC
+                LIMIT 20
+            """.trimIndent()
+
+            db.rawQuery(
+                sql,
                 arrayOf(
                     stopId,
-                    (lat - deltaLat).toString(),
-                    (lat + deltaLat).toString(),
-                    (lon - deltaLon).toString(),
-                    (lon + deltaLon).toString()
+                    minLat, maxLat,
+                    minLon, maxLon,
+                    lat.toString(), lat.toString(),
+                    lon.toString(), lon.toString()
                 )
             ).use { cursor ->
                 val list = mutableListOf<NearbyStop>()
@@ -415,7 +450,6 @@ class TransitRouteEngine(
             val boardPositionsByPattern = mutableMapOf<Int, MutableList<BoardingCandidate>>()
 
             for ((stopId, labels) in previousRound) {
-                // בדיקת עלייה באותה תחנה וגם בתחנות סמוכות בטווח הליכה (רק בהחלפה מסיבוב 2 ואילך)
                 val stopsToExpand = mutableListOf<Pair<String, Long>>()
                 stopsToExpand.add(stopId to 0L)
 
@@ -554,25 +588,39 @@ class TransitRouteEngine(
                 }
             }
 
-            // בדיקת הגעה ליעד – ישירות או בהליכה מסכמת קצרה (עד 350 מ') מתחנה קרובה ליעד
-            val destinationLabels = nextRound[destinationStopId].orEmpty().toMutableList()
+            // מציאת תוויות שהגיעו ליעד (ישירות או בהליכה מסיימת מתחנה סמוכה)
+            val destinationCandidates = mutableListOf<Pair<Label, FinalWalk?>>()
+
+            for (l in nextRound[destinationStopId].orEmpty()) {
+                destinationCandidates.add(l to null)
+            }
 
             for ((stopId, labels) in nextRound) {
                 if (stopId != destinationStopId) {
                     val nearby = getNearbyStops(db, stopId, nearbyStopsCache)
                     val targetMatch = nearby.firstOrNull { it.stopId == destinationStopId }
                     if (targetMatch != null) {
+                        val fromStopName = labels.firstOrNull()?.leg?.toStopName ?: stopId
+                        val finalWalk = FinalWalk(
+                            fromStopId = stopId,
+                            fromStopName = fromStopName,
+                            toStopId = targetMatch.stopId,
+                            toStopName = targetMatch.stopName,
+                            distanceMeters = targetMatch.distanceMeters,
+                            walkMinutes = targetMatch.walkMinutes
+                        )
                         for (l in labels) {
-                            destinationLabels.add(
-                                l.copy(arrivalAt = l.arrivalAt.plusMinutes(targetMatch.walkMinutes))
+                            val updatedLabel = l.copy(
+                                arrivalAt = l.arrivalAt.plusMinutes(targetMatch.walkMinutes)
                             )
+                            destinationCandidates.add(updatedLabel to finalWalk)
                         }
                     }
                 }
             }
 
-            for (destinationLabel in destinationLabels) {
-                val journey = buildJourney(destinationLabel)
+            for ((destLabel, finalWalk) in destinationCandidates) {
+                val journey = buildJourney(destLabel, finalWalk)
                 if (journey.legs.isNotEmpty() && journey.transfers <= maxTransfers) {
                     foundJourneys.add(journey)
                 }
@@ -584,9 +632,10 @@ class TransitRouteEngine(
 
         val journeys = foundJourneys
             .distinctBy { journey ->
+                val walkKey = journey.finalWalk?.let { ">${it.toStopId}" } ?: ""
                 journey.legs.joinToString("|") {
                     "${it.tripId}@${it.departureAt}:${it.fromStopId}>${it.toStopId}"
-                }
+                } + walkKey
             }
             .filter { it.transfers <= maxTransfers }
             .sortedWith(
@@ -654,7 +703,54 @@ class TransitRouteEngine(
 
         val builders = LinkedHashMap<String, RunBuilder>()
 
-        val sql = """
+        // שילוב מלא ותקני של calendar_dates (חגים, חריגים וביטולים)
+        val sql = if (hasCalendarDates(db)) {
+            """
+            SELECT
+                tp.trip_id,
+                r.route_id,
+                COALESCE(r.route_short_name, ''),
+                COALESCE(r.route_long_name, ''),
+                COALESCE(a.agency_name, ''),
+                COALESCE(t.trip_headsign, ''),
+                st.stop_id,
+                COALESCE(s.stop_name, ''),
+                st.arrival_time,
+                st.departure_time,
+                s.stop_lat,
+                s.stop_lon
+            FROM trip_patterns tp
+            JOIN trips t ON t.trip_id = tp.trip_id
+            JOIN routes r ON r.route_id = t.route_id
+            LEFT JOIN agency a ON a.agency_id = r.agency_id
+            LEFT JOIN calendar c ON c.service_id = tp.service_id
+            JOIN stop_times st ON st.trip_id = tp.trip_id
+            LEFT JOIN stops s ON s.stop_id = st.stop_id
+            WHERE tp.pattern_id = ?
+              AND r.route_id = ?
+              AND (
+                  EXISTS (
+                      SELECT 1 FROM calendar_dates cd
+                      WHERE cd.service_id = tp.service_id
+                        AND cd.date = ?
+                        AND cd.exception_type = '1'
+                  )
+                  OR (
+                      c.start_date <= ?
+                      AND c.end_date >= ?
+                      AND c.$weekday = '1'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM calendar_dates cd
+                          WHERE cd.service_id = tp.service_id
+                            AND cd.date = ?
+                            AND cd.exception_type = '2'
+                      )
+                  )
+              )
+            ORDER BY tp.trip_id, st.stop_sequence
+            """.trimIndent()
+        } else {
+            """
             SELECT
                 tp.trip_id,
                 r.route_id,
@@ -681,17 +777,28 @@ class TransitRouteEngine(
               AND c.end_date >= ?
               AND c.$weekday = '1'
             ORDER BY tp.trip_id, st.stop_sequence
-        """.trimIndent()
+            """.trimIndent()
+        }
 
-        db.rawQuery(
-            sql,
+        val sqlArgs = if (hasCalendarDates(db)) {
+            arrayOf(
+                pattern.id.toString(),
+                pattern.routeId,
+                date,
+                date,
+                date,
+                date
+            )
+        } else {
             arrayOf(
                 pattern.id.toString(),
                 pattern.routeId,
                 date,
                 date
             )
-        ).use { cursor ->
+        }
+
+        db.rawQuery(sql, sqlArgs).use { cursor ->
             while (cursor.moveToNext()) {
                 val tripId = cursor.getString(0) ?: continue
 
@@ -733,7 +840,10 @@ class TransitRouteEngine(
         }
     }
 
-    private fun buildJourney(destinationLabel: Label): Journey {
+    private fun buildJourney(
+        destinationLabel: Label,
+        finalWalk: FinalWalk?
+    ): Journey {
         val legs = mutableListOf<RouteLeg>()
         var current: Label? = destinationLabel
 
@@ -749,16 +859,16 @@ class TransitRouteEngine(
         }
 
         val first = legs.first()
-        val last = legs.last()
-
-        val duration = Duration.between(first.departureAt, last.arrivalAt).toMinutes()
+        val finalArrivalAt = destinationLabel.arrivalAt
+        val duration = Duration.between(first.departureAt, finalArrivalAt).toMinutes()
 
         return Journey(
             legs = legs,
             departureAt = first.departureAt,
-            arrivalAt = last.arrivalAt,
+            arrivalAt = finalArrivalAt,
             durationMinutes = duration,
-            transfers = (legs.size - 1).coerceAtLeast(0)
+            transfers = (legs.size - 1).coerceAtLeast(0),
+            finalWalk = finalWalk
         )
     }
 }

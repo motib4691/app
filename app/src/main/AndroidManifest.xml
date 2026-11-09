@@ -6,13 +6,15 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
-    <!-- GPS אינו חובה; ניתן להשתמש גם במיקום רשת -->
+    <!-- GPS אינו חובה; ניתן להשתמש גם במיקום רשת או ללא מיקום כלל -->
     <uses-feature
         android:name="android.hardware.location.gps"
         android:required="false" />
 
     <application
         android:allowBackup="true"
+        android:icon="@drawable/ic_launcher"
+        android:roundIcon="@drawable/ic_launcher"
         android:label="תחבורה ציבורית בישראל"
         android:supportsRtl="true"
         android:usesCleartextTraffic="false"

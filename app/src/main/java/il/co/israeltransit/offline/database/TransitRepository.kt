@@ -23,7 +23,8 @@ class TransitRepository(
         val stopId: String,
         val name: String,
         val latitude: Double?,
-        val longitude: Double?
+        val longitude: Double?,
+        val stopCode: String = stopId
     )
 
     data class RouteStop(
@@ -31,7 +32,8 @@ class TransitRepository(
         val name: String,
         val sequence: Int,
         val arrivalTime: Int?,
-        val departureTime: Int?
+        val departureTime: Int?,
+        val stopCode: String = stopId
     )
 
     private fun queryLines(
@@ -116,6 +118,9 @@ class TransitRepository(
         ).firstOrNull()
     }
 
+    /**
+     * חיפוש תחנות לפי שם או לפי מספר התחנה האמיתי מהשלט (stop_code)
+     */
     fun searchStops(
         searchText: String,
         limit: Int = 100
@@ -130,20 +135,29 @@ class TransitRepository(
                 """
                 SELECT
                     stop_id,
+                    COALESCE(NULLIF(stop_code, ''), stop_id) AS real_stop_code,
                     COALESCE(stop_name, ''),
                     stop_lat,
                     stop_lon
                 FROM stops
-                WHERE stop_name LIKE ? OR stop_id LIKE ?
+                WHERE stop_name LIKE ? OR stop_code LIKE ? OR stop_id LIKE ?
                 ORDER BY
-                    CASE WHEN stop_id = ? THEN 0 ELSE 1 END,
+                    CASE
+                        WHEN stop_code = ? THEN 0
+                        WHEN stop_id = ? THEN 1
+                        WHEN stop_name LIKE ? THEN 2
+                        ELSE 3
+                    END,
                     stop_name
                 LIMIT ?
                 """.trimIndent(),
                 arrayOf(
                     "%$query%",
                     "$query%",
+                    "$query%",
                     query,
+                    query,
+                    "$query%",
                     limit.coerceIn(1, 500).toString()
                 )
             ).use { cursor ->
@@ -152,9 +166,10 @@ class TransitRepository(
                         add(
                             TransitStop(
                                 stopId = cursor.getString(0) ?: "",
-                                name = cursor.getString(1) ?: "",
-                                latitude = if (cursor.isNull(2)) null else cursor.getDouble(2),
-                                longitude = if (cursor.isNull(3)) null else cursor.getDouble(3)
+                                stopCode = cursor.getString(1) ?: "",
+                                name = cursor.getString(2) ?: "",
+                                latitude = if (cursor.isNull(3)) null else cursor.getDouble(3),
+                                longitude = if (cursor.isNull(4)) null else cursor.getDouble(4)
                             )
                         )
                     }
@@ -166,7 +181,7 @@ class TransitRepository(
     }
 
     /**
-     * איתור התחנה הקרובה ביותר לקואורדינטות נתונות
+     * איתור התחנה הקרובה ביותר ב-GPS כולל מספר התחנה האמיתי מהשלט
      */
     fun findNearestStop(
         latitude: Double,
@@ -183,6 +198,7 @@ class TransitRepository(
                 """
                 SELECT
                     stop_id,
+                    COALESCE(NULLIF(stop_code, ''), stop_id) AS real_stop_code,
                     COALESCE(stop_name, ''),
                     stop_lat,
                     stop_lon
@@ -202,15 +218,16 @@ class TransitRepository(
                 var minDistance = Double.MAX_VALUE
 
                 while (cursor.moveToNext()) {
-                    if (cursor.isNull(2) || cursor.isNull(3)) continue
-                    val sLat = cursor.getDouble(2)
-                    val sLon = cursor.getDouble(3)
+                    if (cursor.isNull(3) || cursor.isNull(4)) continue
+                    val sLat = cursor.getDouble(3)
+                    val sLon = cursor.getDouble(4)
                     val dist = haversineMeters(latitude, longitude, sLat, sLon)
                     if (dist < minDistance && dist <= maxDistanceMeters) {
                         minDistance = dist
                         closestStop = TransitStop(
                             stopId = cursor.getString(0) ?: "",
-                            name = cursor.getString(1) ?: "",
+                            stopCode = cursor.getString(1) ?: "",
+                            name = cursor.getString(2) ?: "",
                             latitude = sLat,
                             longitude = sLon
                         )
@@ -251,7 +268,8 @@ class TransitRepository(
                     COALESCE(s.stop_name, ''),
                     st.stop_sequence,
                     st.arrival_time,
-                    st.departure_time
+                    st.departure_time,
+                    COALESCE(NULLIF(s.stop_code, ''), s.stop_id) AS real_stop_code
                 FROM trips t
                 JOIN stop_times st ON st.trip_id = t.trip_id
                 JOIN stops s ON s.stop_id = st.stop_id
@@ -280,7 +298,8 @@ class TransitRepository(
                                 name = cursor.getString(1) ?: "",
                                 sequence = cursor.getInt(2),
                                 arrivalTime = if (cursor.isNull(3)) null else cursor.getInt(3),
-                                departureTime = if (cursor.isNull(4)) null else cursor.getInt(4)
+                                departureTime = if (cursor.isNull(4)) null else cursor.getInt(4),
+                                stopCode = cursor.getString(5) ?: ""
                             )
                         )
                     }

@@ -48,6 +48,7 @@ private const val STOP_LAYER_ID = "transit-stops-individual"
 private data class SelectedTransitStop(
     val id: String,
     val name: String,
+    val stopCode: String = id,
     val latitude: Double? = null,
     val longitude: Double? = null
 )
@@ -183,6 +184,11 @@ fun TransitMapScreen(
                                         ?.takeIf { !it.isJsonNull }
                                         ?.asString ?: ""
 
+                                    val stopCode = properties
+                                        ?.get("stop_code")
+                                        ?.takeIf { !it.isJsonNull }
+                                        ?.asString ?: stopId
+
                                     val stopName = properties
                                         ?.get("stop_name")
                                         ?.takeIf { !it.isJsonNull }
@@ -196,6 +202,7 @@ fun TransitMapScreen(
                                         selectedStop = SelectedTransitStop(
                                             id = stopId,
                                             name = stopName,
+                                            stopCode = stopCode,
                                             latitude = geometry?.latitude(),
                                             longitude = geometry?.longitude()
                                         )
@@ -312,12 +319,15 @@ fun TransitMapScreen(
                 ) {
                     Text(
                         text = stop.name,
-                        style = MaterialTheme.typography.titleMedium
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
                     )
 
                     Text(
-                        text = "מספר תחנה: ${stop.id}",
-                        style = MaterialTheme.typography.bodyMedium
+                        text = "מספר תחנה (מק\"ט): ${stop.stopCode}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Medium
                     )
 
                     Spacer(modifier = Modifier.height(8.dp))
@@ -326,7 +336,8 @@ fun TransitMapScreen(
                         stopId = stop.id,
                         name = stop.name,
                         latitude = stop.latitude,
-                        longitude = stop.longitude
+                        longitude = stop.longitude,
+                        stopCode = stop.stopCode
                     )
 
                     Row(

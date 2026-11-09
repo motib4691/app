@@ -43,7 +43,8 @@ import org.json.JSONObject
 private data class SavedStop(
     val stopId: String,
     val stopName: String,
-    val customName: String
+    val customName: String,
+    val stopCode: String = stopId
 )
 
 private class SavedStopsStorage(context: Context) {
@@ -60,11 +61,14 @@ private class SavedStopsStorage(context: Context) {
             buildList {
                 for (index in 0 until array.length()) {
                     val item = array.getJSONObject(index)
+                    val sId = item.optString("stopId")
+                    val sCode = item.optString("stopCode").ifBlank { sId }
                     add(
                         SavedStop(
-                            stopId = item.optString("stopId"),
+                            stopId = sId,
                             stopName = item.optString("stopName"),
-                            customName = item.optString("customName")
+                            customName = item.optString("customName"),
+                            stopCode = sCode
                         )
                     )
                 }
@@ -83,6 +87,7 @@ private class SavedStopsStorage(context: Context) {
                     put("stopId", stop.stopId)
                     put("stopName", stop.stopName)
                     put("customName", stop.customName)
+                    put("stopCode", stop.stopCode)
                 }
             )
         }
@@ -140,6 +145,7 @@ fun SavedStopsScreen(
         val isEditing = editingStop != null
         val stopName = editingStop?.stopName ?: dialogStop?.name.orEmpty()
         val stopId = editingStop?.stopId ?: dialogStop?.stopId.orEmpty()
+        val stopCode = editingStop?.stopCode ?: dialogStop?.stopCode ?: stopId
 
         AlertDialog(
             onDismissRequest = {
@@ -151,10 +157,12 @@ fun SavedStopsScreen(
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(stopName)
+                    Text(stopName, fontWeight = FontWeight.Bold)
                     Text(
-                        "מספר תחנה: $stopId",
-                        style = MaterialTheme.typography.bodySmall
+                        "מספר תחנה (מק\"ט): $stopCode",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Medium
                     )
                     OutlinedTextField(
                         value = customName,
@@ -177,7 +185,8 @@ fun SavedStopsScreen(
                                 savedStops.filterNot { it.stopId == stopId } + SavedStop(
                                     stopId = stopId,
                                     stopName = stopName,
-                                    customName = name
+                                    customName = name,
+                                    stopCode = stopCode
                                 )
                             }
                             persist(updated)
@@ -232,7 +241,7 @@ fun SavedStopsScreen(
             value = query,
             onValueChange = { query = it },
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("חיפוש תחנה לפי שם או מספר להוספה") },
+            label = { Text("חיפוש תחנה לפי שם או מספר מהשלט (מק\"ט)") },
             singleLine = true
         )
 
@@ -252,7 +261,12 @@ fun SavedStopsScreen(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(stop.name, fontWeight = FontWeight.Bold)
-                        Text("מספר תחנה: ${stop.stopId}", style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            "תחנה ${stop.stopCode}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Medium
+                        )
 
                         val alreadySaved = savedStops.any { it.stopId == stop.stopId }
 
@@ -296,13 +310,19 @@ fun SavedStopsScreen(
                     )
 
                     Text(stop.stopName)
-                    Text("מספר תחנה: ${stop.stopId}", style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        "תחנה ${stop.stopCode}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Medium
+                    )
 
                     val transitStop = TransitRepository.TransitStop(
                         stopId = stop.stopId,
                         name = stop.stopName,
                         latitude = null,
-                        longitude = null
+                        longitude = null,
+                        stopCode = stop.stopCode
                     )
 
                     Row(

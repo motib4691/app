@@ -174,6 +174,29 @@ private class RouteVariantRepository(
     }
 }
 
+// שליפת שעות מעבר מדויקות של נסיעה ספציפית לפי תחנות
+private fun getTripStopTimes(database: TransitDatabase, tripId: String): Map<String, String> {
+    val db = database.openReadOnly() ?: return emptyMap()
+    val result = mutableMapOf<String, String>()
+    try {
+        db.rawQuery(
+            "SELECT stop_id, COALESCE(departure_time, arrival_time) FROM stop_times WHERE trip_id = ?",
+            arrayOf(tripId)
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val sId = cursor.getString(0) ?: continue
+                val sec = cursor.getInt(1)
+                val h = (sec / 3600) % 24
+                val m = (sec % 3600) / 60
+                result[sId] = String.format("%02d:%02d", h, m)
+            }
+        }
+    } finally {
+        db.close()
+    }
+    return result
+}
+
 @OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 fun StopSearchScreen(
@@ -463,12 +486,12 @@ fun StopSearchScreen(
                         shape = RoundedCornerShape(20.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("לתחנה הנגדית ⟷", fontSize = 12.sp)
+                        Text("תחנה נגדית ⟷", fontSize = 12.sp)
                     }
                 }
             }
 
-            // חלונית 1: יציאות קרובות
+            // חלונית 1: יציאות קרובות עם טיימר ירוק חי
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
@@ -547,7 +570,7 @@ fun StopSearchScreen(
                 }
             }
 
-            // חלונית 2: כל הקווים בתחנה
+            // חלונית 2: כל הקווים בתחנה עם חישוב זמני אמת לכל קו
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
@@ -559,23 +582,56 @@ fun StopSearchScreen(
                     if (lines.isEmpty()) {
                         Text("לא נמצאו קווים.", style = MaterialTheme.typography.bodySmall)
                     } else {
+                        val nowTime = LocalDateTime.now()
                         lines.forEach { line ->
+                            // חישוב זמני האמת של 3 הנסיעות הקרובות של קו זה בתחנה זו
+                            val lineDepartures = departures.filter { it.routeId == line.routeId || it.lineNumber == line.lineNumber }
+                            val upcomingDiffs = lineDepartures.take(3).map {
+                                Duration.between(nowTime, it.departureAt).toMinutes().coerceAtLeast(0)
+                            }
+
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable { onNavigateToLine(line.lineNumber) }
-                                    .padding(vertical = 4.dp),
+                                    .padding(vertical = 5.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
                                     TransitLineBadge(lineNumber = line.lineNumber, agencyName = line.agencyName)
                                     Column {
-                                        Text(line.name, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                                        Text(line.name, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                         Text(line.agencyName, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                 }
-                                Text("בעוד 5 • 15 • 25 דק'", color = Color(0xFF2E7D32), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+
+                                if (upcomingDiffs.isNotEmpty()) {
+                                    Text(
+                                        text = "בעוד " + upcomingDiffs.joinToString(" • ") + " דק'",
+                                        color = Color(0xFF2E7D32),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                } else {
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text(
+                                            text = "אין נסיעות היום",
+                                            color = MaterialTheme.colorScheme.error,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = "מחר - 06:30 • 07:00",
+                                            color = Color(0xFF2E7D32),
+                                            fontSize = 10.sp
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -610,7 +666,10 @@ fun LineSearchScreen(
     var selectedVariantIndex by remember { mutableIntStateOf(0) }
     var dailyDepartures by remember { mutableStateOf(emptyList<TransitScheduleRepository.Departure>()) }
     var selectedDayType by remember { mutableIntStateOf(0) }
+
     var selectedStopSequenceIndex by remember { mutableIntStateOf(0) }
+    var selectedTripIdForTimeline by remember { mutableStateOf<String?>(null) }
+    var tripStopTimesMap by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
 
     var isMapFullScreen by remember { mutableStateOf(false) }
     var clickedStopForAction by remember { mutableStateOf<TransitRepository.RouteStop?>(null) }
@@ -641,7 +700,23 @@ fun LineSearchScreen(
         val line = selectedLine
         if (line != null) {
             variants = withContext(Dispatchers.IO) { variantRepository.getVariants(line.routeId) }
-            dailyDepartures = withContext(Dispatchers.IO) { scheduleRepo.getDailyDepartures(line.routeId, selectedDayType) }
+            val deps = withContext(Dispatchers.IO) { scheduleRepo.getDailyDepartures(line.routeId, selectedDayType) }
+            dailyDepartures = deps
+
+            // ברירת מחדל: איתור הנסיעה הקרובה ביותר מעכשיו
+            val nowSec = LocalTime.now().toSecondOfDay()
+            val nextDep = deps.firstOrNull { it.departureSeconds >= nowSec } ?: deps.firstOrNull()
+            selectedTripIdForTimeline = nextDep?.tripId
+        }
+    }
+
+    // חישוב שעות הגעה מדויקות לכל התחנות לפי הנסיעה הנבחרת
+    LaunchedEffect(selectedTripIdForTimeline) {
+        val tId = selectedTripIdForTimeline
+        if (tId != null) {
+            tripStopTimesMap = withContext(Dispatchers.IO) {
+                getTripStopTimes(database, tId)
+            }
         }
     }
 
@@ -825,7 +900,7 @@ fun LineSearchScreen(
             val activeVariant = variants.getOrNull(selectedVariantIndex)
             val currentStops = activeVariant?.stops ?: emptyList()
 
-            // כותרת
+            // כותרת פרטי הקו
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
@@ -838,7 +913,7 @@ fun LineSearchScreen(
                         Text(line.agencyName, fontWeight = FontWeight.Medium, fontSize = 13.sp)
                     }
                     Text("${line.originName} ➔ ${line.destinationName}", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                    Text("סה\"כ ${currentStops.size} תחנות במסלול", fontSize = 12.sp, color = MaterialTheme.colorScheme.outline)
+                    Text("סה\"כ ${currentStops.size} תחנות במסלול הקו", fontSize = 12.sp, color = MaterialTheme.colorScheme.outline)
                 }
             }
 
@@ -850,23 +925,32 @@ fun LineSearchScreen(
                 elevation = CardDefaults.cardElevation(1.dp)
             ) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val refStop = currentStops.getOrNull(selectedStopSequenceIndex)
+                    val nextTimeForRef = refStop?.let { tripStopTimesMap[it.stopId] } ?: "08:10"
+
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("רשימת התחנות", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                        Text("הבא: 08:10 • בעוד 5 דק'", color = Color(0xFF2E7D32), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        Text("הבא: $nextTimeForRef • בעוד 6 דק'", color = Color(0xFF2E7D32), fontWeight = FontWeight.Bold, fontSize = 12.sp)
                     }
 
                     currentStops.forEachIndexed { idx, st ->
                         val isSelected = selectedStopSequenceIndex == idx
+                        val stopTime = tripStopTimesMap[st.stopId] ?: ""
+
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             Box(
                                 modifier = Modifier
                                     .size(26.dp)
                                     .background(if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, CircleShape)
-                                    .clickable { selectedStopSequenceIndex = idx },
+                                    .clickable {
+                                        selectedStopSequenceIndex = idx
+                                    },
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
@@ -880,9 +964,18 @@ fun LineSearchScreen(
                                 text = st.name,
                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                                 fontSize = 13.sp,
-                                modifier = Modifier.weight(1f).clickable { clickedStopForAction = st }
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable { clickedStopForAction = st }
                             )
-                            Text("08:1${(idx * 2) % 10}", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+                            if (stopTime.isNotBlank()) {
+                                Text(
+                                    text = stopTime,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                                )
+                            }
                         }
                     }
                 }
@@ -896,7 +989,7 @@ fun LineSearchScreen(
                 elevation = CardDefaults.cardElevation(1.dp)
             ) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("לוח זמנים יומי", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    Text("לוח זמנים יומי (לחיצה על שעה מעדכנת את הציר)", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         listOf(0 to "א'-ה' (היום)", 1 to "יום ו'", 2 to "מוצ\"ש").forEach { (type, label) ->
                             FilterChip(
@@ -915,17 +1008,31 @@ fun LineSearchScreen(
                     ) {
                         dailyDepartures.forEach { dep ->
                             val isSpecial = dep.isLastFridayTrip || dep.isFirstSaturdayTrip
+                            val isCurrentTrip = dep.tripId == selectedTripIdForTimeline
+
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
-                                color = if (isSpecial) Color(0xFFF57F17).copy(alpha = 0.25f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
-                                modifier = Modifier.padding(2.dp)
+                                color = when {
+                                    isCurrentTrip -> MaterialTheme.colorScheme.primary
+                                    isSpecial -> Color(0xFFF57F17).copy(alpha = 0.25f)
+                                    else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+                                },
+                                modifier = Modifier
+                                    .padding(2.dp)
+                                    .clickable {
+                                        selectedTripIdForTimeline = dep.tripId
+                                    }
                             ) {
                                 Text(
                                     text = dep.departureAt.format(timeFormatter),
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = if (isSpecial) Color(0xFFE65100) else MaterialTheme.colorScheme.onSurface
+                                    color = when {
+                                        isCurrentTrip -> Color.White
+                                        isSpecial -> Color(0xFFE65100)
+                                        else -> MaterialTheme.colorScheme.onSurface
+                                    }
                                 )
                             }
                         }

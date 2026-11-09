@@ -83,7 +83,8 @@ import kotlin.math.roundToInt
 private data class PlannerSavedStop(
     val stopId: String,
     val stopName: String,
-    val customName: String
+    val customName: String,
+    val stopCode: String = stopId
 )
 
 private fun loadPlannerSavedStops(context: android.content.Context): List<PlannerSavedStop> {
@@ -97,11 +98,14 @@ private fun loadPlannerSavedStops(context: android.content.Context): List<Planne
         buildList {
             for (index in 0 until array.length()) {
                 val item = array.getJSONObject(index)
+                val sId = item.optString("stopId")
+                val sCode = item.optString("stopCode").ifBlank { sId }
                 add(
                     PlannerSavedStop(
-                        stopId = item.optString("stopId"),
+                        stopId = sId,
                         stopName = item.optString("stopName"),
-                        customName = item.optString("customName")
+                        customName = item.optString("customName"),
+                        stopCode = sCode
                     )
                 )
             }
@@ -172,7 +176,7 @@ fun RoutePlannerScreen(
                     routeResult = null
                     Toast.makeText(
                         context,
-                        "נבחרה התחנה הקרובה אליך: ${nearest.name}",
+                        "נבחרה התחנה הקרובה אליך: ${nearest.name} (תחנה ${nearest.stopCode})",
                         Toast.LENGTH_SHORT
                     ).show()
                 } else {
@@ -302,7 +306,6 @@ fun RoutePlannerScreen(
         }
     }
 
-    // תצוגת מפה ממוקדת ומסומנת עם כל תחנות ומסלול הנסיעה
     if (journeyForMap != null) {
         val journey = journeyForMap!!
         val firstLeg = journey.legs.firstOrNull()
@@ -475,7 +478,7 @@ fun RoutePlannerScreen(
                 Text(
                     "קובץ המפה לא הותקן עדיין במכשיר.\n\n" +
                     "תכנון הנסיעה, זמני ההמתנה וזמני ההליכה המלאים פועלים ומוצגים כאן ברשימה גם ללא מפה.\n\n" +
-                    "כדי לצxxx xxxxxx על גבי מפה וקטורית, תוכל לייבא קובץ מפה במסך 'מפה לא מקוונת'."
+                    "כדי לצפות במסלול על גבי מפה וקטורית, תוכל לייבא קובץ מפה במסך 'מפה לא מקוונת'."
                 )
             },
             confirmButton = {
@@ -509,7 +512,6 @@ fun RoutePlannerScreen(
             }
         }
 
-        // פס מידע על הגדרות החיפוש הפעילות
         val walkingNote = if (!settings.allowWalkingTransfers) " | החלפה באותה תחנה בלבד" else ""
         Surface(
             shape = RoundedCornerShape(8.dp),
@@ -539,7 +541,7 @@ fun RoutePlannerScreen(
         }
 
         Text(
-            "בחר את נקודת המוצא ואת היעד. אפשר לחפש לפי שם תחנה או מספר תחנה.",
+            "בחר את נקודת המוצא ואת היעד. אפשר לחפש לפי שם תחנה או מספר תחנה מהשלט.",
             style = MaterialTheme.typography.bodyMedium
         )
 
@@ -601,7 +603,7 @@ fun RoutePlannerScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable { activeField = "origin" },
-                label = { Text("תחנת מוצא") },
+                label = { Text("תחנת מוצא (שם או מספר מהשלט)") },
                 singleLine = true
             )
 
@@ -614,7 +616,12 @@ fun RoutePlannerScreen(
                     ) {
                         Column(modifier = Modifier.padding(12.dp)) {
                             Text(stop.name, fontWeight = FontWeight.Bold)
-                            Text("תחנה ${stop.stopId}", style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                "תחנה ${stop.stopCode}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Medium
+                            )
                         }
                     }
                 }
@@ -631,7 +638,7 @@ fun RoutePlannerScreen(
                     routeResult = null
                 },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("תחנת יעד") },
+                label = { Text("תחנת יעד (שם או מספר מהשלט)") },
                 singleLine = true
             )
 
@@ -644,7 +651,12 @@ fun RoutePlannerScreen(
                     ) {
                         Column(modifier = Modifier.padding(12.dp)) {
                             Text(stop.name, fontWeight = FontWeight.Bold)
-                            Text("תחנה ${stop.stopId}", style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                "תחנה ${stop.stopCode}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Medium
+                            )
                         }
                     }
                 }
@@ -682,13 +694,14 @@ fun RoutePlannerScreen(
                                 stopId = saved.stopId,
                                 name = saved.stopName,
                                 latitude = null,
-                                longitude = null
+                                longitude = null,
+                                stopCode = saved.stopCode
                             )
                             chooseStop(stop)
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("${saved.customName} — ${saved.stopName}")
+                        Text("${saved.customName} — ${saved.stopName} (תחנה ${saved.stopCode})")
                     }
                 }
 
@@ -860,10 +873,10 @@ fun RoutePlannerScreen(
                                             Spacer(modifier = Modifier.height(4.dp))
 
                                             Text(
-                                                "יציאה: ${leg.departureAt.format(plannerTimeFormatter)} מ־${leg.fromStopName} (${leg.fromStopId})"
+                                                "יציאה: ${leg.departureAt.format(plannerTimeFormatter)} מ־${leg.fromStopName}"
                                             )
                                             Text(
-                                                "הגעה: ${leg.arrivalAt.format(plannerTimeFormatter)} עד ${leg.toStopName} (${leg.toStopId})"
+                                                "הגעה: ${leg.arrivalAt.format(plannerTimeFormatter)} עד ${leg.toStopName}"
                                             )
                                         }
                                     }

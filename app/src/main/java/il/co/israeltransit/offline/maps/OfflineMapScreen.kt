@@ -13,8 +13,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import il.co.israeltransit.offline.database.TransitDatabase
 import il.co.israeltransit.offline.database.TransitRepository
+import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
@@ -57,18 +57,31 @@ fun OfflineMapScreen(
 ) {
     val context = LocalContext.current
     val mapStorage = remember(context) { OfflineMapStorage(context) }
-    var activeMap by remember { mutableStateOf<MapLibreMap?>(null) }
+    var activeMapInstance by remember { mutableStateOf<MapLibreMap?>(null) }
     var showCityDialog by remember { mutableStateOf(false) }
     var citySearchQuery by remember { mutableStateOf("") }
 
     if (!mapStorage.isMapAvailable()) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(24.dp)) {
-                Text("המפה הלא-מקוונת עדיין לא הותקנה.", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                Spacer(modifier = Modifier.height(8.dp))
-                Text("ניתן לייבא את קובץ המפה (israel-basemap.pmtiles) במסך 'עדכון נתונים'.", style = MaterialTheme.typography.bodySmall)
-                Spacer(modifier = Modifier.height(16.dp))
-                Button(onClick = onBack, shape = RoundedCornerShape(20.dp)) { Text("חזרה") }
+            Card(
+                modifier = Modifier.padding(24.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(20.dp)
+                ) {
+                    Text("קובץ המפה הלא-מקוונת אינו מותקן", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "כדי לצפות במפה ללא אינטרנט, ייבא את קובץ israel-basemap.pmtiles במסך 'עדכון נתונים'.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Button(onClick = onBack, shape = RoundedCornerShape(20.dp)) {
+                        Text("חזרה למסך הבית")
+                    }
+                }
             }
         }
         return
@@ -77,14 +90,14 @@ fun OfflineMapScreen(
     if (showCityDialog) {
         AlertDialog(
             onDismissRequest = { showCityDialog = false },
-            title = { Text("מעבר לעיר או יישוב") },
+            title = { Text("מעבר מהיר לעיר או יישוב", fontWeight = FontWeight.Bold) },
             text = {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     OutlinedTextField(
                         value = citySearchQuery,
                         onValueChange = { citySearchQuery = it },
                         modifier = Modifier.fillMaxWidth(),
-                        placeholder = { Text("חפש עיר...") },
+                        placeholder = { Text("הקלד שם עיר...") },
                         singleLine = true,
                         shape = RoundedCornerShape(12.dp)
                     )
@@ -97,16 +110,22 @@ fun OfflineMapScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable {
-                                        activeMap?.animateCamera(
-                                            CameraUpdateFactory.newLatLngZoom(LatLng(city.lat, city.lon), 13.5)
+                                        activeMapInstance?.animateCamera(
+                                            CameraUpdateFactory.newCameraPosition(
+                                                CameraPosition.Builder()
+                                                    .target(LatLng(city.lat, city.lon))
+                                                    .zoom(13.8)
+                                                    .build()
+                                            ),
+                                            1200
                                         )
                                         showCityDialog = false
                                     }
-                                    .padding(vertical = 10.dp, horizontal = 4.dp),
+                                    .padding(vertical = 12.dp, horizontal = 6.dp),
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.Medium
                             )
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                         }
                     }
                 }
@@ -126,11 +145,11 @@ fun OfflineMapScreen(
             onPlanRouteTo = { stop -> onOpenStopDetails?.invoke(stop) }
         )
 
-        // שורת כפתורים צפים עליונה
+        // שורת כפתורים עליונה שקופה למחצה
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp)
+                .padding(horizontal = 14.dp, vertical = 12.dp)
                 .align(Alignment.TopCenter),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
@@ -138,7 +157,9 @@ fun OfflineMapScreen(
             FilledTonalButton(
                 onClick = onBack,
                 shape = RoundedCornerShape(20.dp),
-                colors = ButtonDefaults.filledTonalButtonColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f))
+                colors = ButtonDefaults.filledTonalButtonColors(
+                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.90f)
+                )
             ) {
                 Text("חזרה")
             }
@@ -149,7 +170,9 @@ fun OfflineMapScreen(
                     showCityDialog = true
                 },
                 shape = RoundedCornerShape(20.dp),
-                colors = ButtonDefaults.filledTonalButtonColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f))
+                colors = ButtonDefaults.filledTonalButtonColors(
+                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.90f)
+                )
             ) {
                 Text("🏙️ מעבר לעיר")
             }

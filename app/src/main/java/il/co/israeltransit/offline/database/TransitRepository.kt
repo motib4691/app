@@ -44,35 +44,14 @@ class TransitRepository(
         val stopCode: String = stopId
     )
 
-    fun searchLines(searchText: String, limit: Int = 100): List<TransitLine> {
-        val query = searchText.trim()
-        if (query.isEmpty()) return emptyList()
-
-        val normalized = OperatorTheme.normalizeHebrew(query)
+    private fun queryLines(
+        sql: String,
+        args: Array<String>
+    ): List<TransitLine> {
         val db = databaseProvider.openReadOnly() ?: return emptyList()
 
         return try {
-            val sql = """
-                SELECT
-                    r.route_id,
-                    COALESCE(r.route_short_name, ''),
-                    COALESCE(r.route_long_name, ''),
-                    COALESCE(r.agency_id, ''),
-                    COALESCE(a.agency_name, ''),
-                    COALESCE(r.route_type, '')
-                FROM routes r
-                LEFT JOIN agency a ON a.agency_id = r.agency_id
-                WHERE r.route_short_name LIKE ? OR r.route_long_name LIKE ?
-                ORDER BY
-                    CASE WHEN r.route_short_name = ? THEN 0 ELSE 1 END,
-                    r.route_short_name
-                LIMIT ?
-            """.trimIndent()
-
-            db.rawQuery(
-                sql,
-                arrayOf("$query%", "%$query%", query, limit.coerceIn(1, 500).toString())
-            ).use { cursor ->
+            db.rawQuery(sql, args).use { cursor ->
                 buildList {
                     while (cursor.moveToNext()) {
                         val routeId = cursor.getString(0) ?: ""
@@ -82,7 +61,6 @@ class TransitRepository(
                         val agencyName = cursor.getString(4) ?: ""
                         val routeType = cursor.getString(5) ?: ""
 
-                        // חילוץ מוצא ויעד מתוך השם המלא של הקו
                         val parts = longName.split("<->", "⟷", "-", "–")
                         val origin = parts.getOrNull(0)?.trim() ?: ""
                         val dest = parts.getOrNull(1)?.trim() ?: ""
@@ -107,10 +85,67 @@ class TransitRepository(
         }
     }
 
+    fun searchLines(
+        searchText: String,
+        limit: Int = 100
+    ): List<TransitLine> {
+        val query = searchText.trim()
+        if (query.isEmpty()) return emptyList()
+
+        return queryLines(
+            """
+            SELECT
+                r.route_id,
+                COALESCE(r.route_short_name, ''),
+                COALESCE(r.route_long_name, ''),
+                COALESCE(r.agency_id, ''),
+                COALESCE(a.agency_name, ''),
+                COALESCE(r.route_type, '')
+            FROM routes r
+            LEFT JOIN agency a ON a.agency_id = r.agency_id
+            WHERE
+                r.route_short_name LIKE ?
+                OR r.route_long_name LIKE ?
+            ORDER BY
+                CASE WHEN r.route_short_name = ? THEN 0 ELSE 1 END,
+                r.route_short_name
+            LIMIT ?
+            """.trimIndent(),
+            arrayOf(
+                "$query%",
+                "%$query%",
+                query,
+                limit.coerceIn(1, 500).toString()
+            )
+        )
+    }
+
+    fun getLine(routeId: String): TransitLine? {
+        return queryLines(
+            """
+            SELECT
+                r.route_id,
+                COALESCE(r.route_short_name, ''),
+                COALESCE(r.route_long_name, ''),
+                COALESCE(r.agency_id, ''),
+                COALESCE(a.agency_name, ''),
+                COALESCE(r.route_type, '')
+            FROM routes r
+            LEFT JOIN agency a ON a.agency_id = r.agency_id
+            WHERE r.route_id = ?
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(routeId)
+        ).firstOrNull()
+    }
+
     /**
-     * חיפוש תחנות ורחובות עם נירמול עברי מלא (מתעלם מגרשיים ומרכאות)
+     * חיפוש תחנות ורחובות עם נירמול עברי חכם (ללא גרשיים ומרכאות)
      */
-    fun searchStops(searchText: String, limit: Int = 100): List<TransitStop> {
+    fun searchStops(
+        searchText: String,
+        limit: Int = 100
+    ): List<TransitStop> {
         val raw = searchText.trim()
         if (raw.isEmpty()) return emptyList()
 
@@ -118,7 +153,8 @@ class TransitRepository(
         val db = databaseProvider.openReadOnly() ?: return emptyList()
 
         return try {
-            val sql = """
+            db.rawQuery(
+                """
                 SELECT
                     stop_id,
                     COALESCE(NULLIF(stop_code, ''), stop_id) AS real_stop_code,
@@ -136,10 +172,7 @@ class TransitRepository(
                     END,
                     stop_name
                 LIMIT ?
-            """.trimIndent()
-
-            db.rawQuery(
-                sql,
+                """.trimIndent(),
                 arrayOf(
                     "%$raw%",
                     "%$cleanQuery%",
@@ -171,7 +204,7 @@ class TransitRepository(
     }
 
     /**
-     * איחוד תחנות נגדיות באותו שם לקבוצה אחת
+     * איחוד תחנות נגדיות באותו שם לכרטיס משותף
      */
     fun searchGroupedStops(searchText: String, limit: Int = 50): List<DualStopGroup> {
         val stops = searchStops(searchText, limit * 2)
@@ -196,9 +229,6 @@ class TransitRepository(
         }.take(limit)
     }
 
-    /**
-     * איתור התחנה הנגדית בעלת אותו השם
-     */
     fun findOppositeStop(stop: TransitStop): TransitStop? {
         val db = databaseProvider.openReadOnly() ?: return null
         return try {
@@ -230,7 +260,11 @@ class TransitRepository(
         }
     }
 
-    fun findNearestStop(latitude: Double, longitude: Double, maxDistanceMeters: Double = 3000.0): TransitStop? {
+    fun findNearestStop(
+        latitude: Double,
+        longitude: Double,
+        maxDistanceMeters: Double = 3000.0
+    ): TransitStop? {
         val db = databaseProvider.openReadOnly() ?: return null
         val deltaLat = maxDistanceMeters / 111000.0
         val cosLat = cos(Math.toRadians(latitude)).coerceAtLeast(0.1)
@@ -246,7 +280,8 @@ class TransitRepository(
                     stop_lat,
                     stop_lon
                 FROM stops
-                WHERE stop_lat BETWEEN ? AND ? AND stop_lon BETWEEN ? AND ?
+                WHERE stop_lat BETWEEN ? AND ?
+                  AND stop_lon BETWEEN ? AND ?
                 LIMIT 60
                 """.trimIndent(),
                 arrayOf(
@@ -282,7 +317,10 @@ class TransitRepository(
         }
     }
 
-    private fun haversineMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+    private fun haversineMeters(
+        lat1: Double, lon1: Double,
+        lat2: Double, lon2: Double
+    ): Double {
         val earthRadius = 6371000.0
         val dLat = Math.toRadians(lat2 - lat1)
         val dLon = Math.toRadians(lon2 - lon1)
@@ -293,7 +331,69 @@ class TransitRepository(
         return earthRadius * c
     }
 
-    fun getLinesForStop(stopId: String, limit: Int = 100): List<TransitLine> {
+    /**
+     * שליפת כל התחנות של קו מסוים (שוחזרה במלואה)
+     */
+    fun getStopsForLine(
+        routeId: String,
+        limit: Int = 500
+    ): List<RouteStop> {
+        val db = databaseProvider.openReadOnly() ?: return emptyList()
+
+        return try {
+            db.rawQuery(
+                """
+                SELECT
+                    s.stop_id,
+                    COALESCE(s.stop_name, ''),
+                    st.stop_sequence,
+                    st.arrival_time,
+                    st.departure_time,
+                    COALESCE(NULLIF(s.stop_code, ''), s.stop_id) AS real_stop_code
+                FROM trips t
+                JOIN stop_times st ON st.trip_id = t.trip_id
+                JOIN stops s ON s.stop_id = st.stop_id
+                WHERE t.route_id = ?
+                  AND t.trip_id = (
+                      SELECT trip_id
+                      FROM trips
+                      WHERE route_id = ?
+                      ORDER BY trip_id
+                      LIMIT 1
+                  )
+                ORDER BY st.stop_sequence
+                LIMIT ?
+                """.trimIndent(),
+                arrayOf(
+                    routeId,
+                    routeId,
+                    limit.coerceIn(1, 2000).toString()
+                )
+            ).use { cursor ->
+                buildList {
+                    while (cursor.moveToNext()) {
+                        add(
+                            RouteStop(
+                                stopId = cursor.getString(0) ?: "",
+                                name = cursor.getString(1) ?: "",
+                                sequence = cursor.getInt(2),
+                                arrivalTime = if (cursor.isNull(3)) null else cursor.getInt(3),
+                                departureTime = if (cursor.isNull(4)) null else cursor.getInt(4),
+                                stopCode = cursor.getString(5) ?: ""
+                            )
+                        )
+                    }
+                }
+            }
+        } finally {
+            db.close()
+        }
+    }
+
+    fun getLinesForStop(
+        stopId: String,
+        limit: Int = 100
+    ): List<TransitLine> {
         val db = databaseProvider.openReadOnly() ?: return emptyList()
 
         return try {
@@ -313,7 +413,10 @@ class TransitRepository(
                 WHERE st.stop_id = ?
                 LIMIT ?
                 """.trimIndent(),
-                arrayOf(stopId, limit.coerceIn(1, 500).toString())
+                arrayOf(
+                    stopId,
+                    limit.coerceIn(1, 500).toString()
+                )
             ).use { cursor ->
                 val lines = mutableListOf<TransitLine>()
                 while (cursor.moveToNext()) {
@@ -336,7 +439,7 @@ class TransitRepository(
                     )
                 }
 
-                // מיון עירוני תחילה ואז לפי מספר הקו
+                // מיון עירוני תחילה ואז לפי מספר קו
                 lines.sortedWith(
                     compareBy<TransitLine> { line ->
                         val isUrban = line.originName.isNotBlank() && line.destinationName.isNotBlank() &&

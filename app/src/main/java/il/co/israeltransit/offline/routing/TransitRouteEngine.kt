@@ -5,7 +5,6 @@ import il.co.israeltransit.offline.database.TransitDatabase
 import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
-import java.util.LinkedHashMap
 import kotlin.math.atan2
 import kotlin.math.ceil
 import kotlin.math.cos
@@ -17,8 +16,7 @@ class TransitRouteEngine(
 ) {
     companion object {
         const val MAX_ALLOWED_TRANSFERS = 5
-        private const val MAX_LABELS_PER_STOP_PER_ROUND = 8
-        private const val MAX_CACHED_PATTERN_RUNS = 6
+        private const val MAX_LABELS_PER_STOP_PER_ROUND = 6
         private const val MAX_JOURNEY_MINUTES = 720L
         const val DEFAULT_MINIMUM_TRANSFER_MINUTES = 2L
         const val MAX_WALK_TRANSFER_DISTANCE_METERS = 350.0
@@ -140,7 +138,105 @@ class TransitRouteEngine(
         val walkMinutes: Long
     )
 
+    private data class CachedStop(
+        val stopId: String,
+        val name: String,
+        val lat: Double,
+        val lon: Double
+    )
+
+    // רשת מרחבית מהירה בזיכרון (In-Memory Spatial Index) לחיסול סריקות הדיסק
+    private var stopsGrid: Map<Long, List<CachedStop>>? = null
+    private var stopsById: Map<String, CachedStop>? = null
+    private var cachedPatterns: Pair<Map<Int, Pattern>, Map<String, List<BoardPosition>>>? = null
     private var calendarDatesTableExists: Boolean? = null
+
+    private fun ensureStopsLoaded(db: SQLiteDatabase) {
+        if (stopsGrid != null && stopsById != null) return
+
+        val grid = mutableMapOf<Long, MutableList<CachedStop>>()
+        val byId = mutableMapOf<String, CachedStop>()
+
+        db.rawQuery(
+            """
+            SELECT stop_id, COALESCE(stop_name, ''), stop_lat, stop_lon
+            FROM stops
+            WHERE stop_lat IS NOT NULL AND stop_lon IS NOT NULL
+            """.trimIndent(),
+            null
+        ).use { cursor ->
+            val idCol = cursor.getColumnIndexOrThrow("stop_id")
+            val nameCol = cursor.getColumnIndexOrThrow("stop_name")
+            val latCol = cursor.getColumnIndexOrThrow("stop_lat")
+            val lonCol = cursor.getColumnIndexOrThrow("stop_lon")
+
+            while (cursor.moveToNext()) {
+                val id = cursor.getString(idCol) ?: continue
+                val name = cursor.getString(nameCol) ?: ""
+                val lat = cursor.getDouble(latCol)
+                val lon = cursor.getDouble(lonCol)
+
+                if (lat !in -90.0..90.0 || lon !in -180.0..180.0) continue
+
+                val stop = CachedStop(id, name, lat, lon)
+                byId[id] = stop
+
+                val key = spatialCellKey(lat, lon)
+                grid.getOrPut(key) { mutableListOf() }.add(stop)
+            }
+        }
+
+        stopsGrid = grid
+        stopsById = byId
+    }
+
+    private fun spatialCellKey(lat: Double, lon: Double): Long {
+        val latIdx = (lat * 200).toInt()  // תא של כ-500 מטר
+        val lonIdx = (lon * 200).toInt()
+        return (latIdx.toLong() shl 32) or (lonIdx.toLong() and 0xFFFFFFFFL)
+    }
+
+    private fun getNearbyStopsFast(
+        stopId: String,
+        maxDistanceMeters: Double = MAX_WALK_TRANSFER_DISTANCE_METERS
+    ): List<NearbyStop> {
+        val origin = stopsById?.get(stopId) ?: return emptyList()
+        val grid = stopsGrid ?: return emptyList()
+
+        val latIdx = (origin.lat * 200).toInt()
+        val lonIdx = (origin.lon * 200).toInt()
+
+        val candidates = mutableListOf<NearbyStop>()
+
+        // סריקה מהירה בזיכרון של התא הנוכחי ו-8 התאים השכנים (ללא שום שאילתת SQL!)
+        for (dLat in -1..1) {
+            for (dLon in -1..1) {
+                val key = ((latIdx + dLat).toLong() shl 32) or ((lonIdx + dLon).toLong() and 0xFFFFFFFFL)
+                val cellStops = grid[key] ?: continue
+
+                for (target in cellStops) {
+                    if (target.stopId == stopId) continue
+                    val dist = calculateDistanceMeters(
+                        origin.lat, origin.lon,
+                        target.lat, target.lon
+                    ) ?: continue
+
+                    if (dist <= maxDistanceMeters) {
+                        candidates.add(
+                            NearbyStop(
+                                stopId = target.stopId,
+                                stopName = target.name,
+                                distanceMeters = dist,
+                                walkMinutes = estimateWalkingMinutes(dist)
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        return candidates.sortedBy { it.distanceMeters }.take(6)
+    }
 
     private fun hasCalendarDates(db: SQLiteDatabase): Boolean {
         if (calendarDatesTableExists == null) {
@@ -207,7 +303,9 @@ class TransitRouteEngine(
             ?: return SearchResult(emptyList(), "לא נמצא מסד נתונים. יש לייבא תחילה את קובץ הנתונים במסך עדכון נתונים.")
 
         return try {
-            val loaded = loadPatterns(db)
+            ensureStopsLoaded(db)
+
+            val loaded = cachedPatterns ?: loadPatterns(db).also { cachedPatterns = it }
             val patternsById = loaded.first
             val positionsByStop = loaded.second
 
@@ -239,78 +337,6 @@ class TransitRouteEngine(
             SearchResult(emptyList(), "אירעה שגיאה בחישוב המסלול: " + (e.message ?: "שגיאה לא ידועה"))
         } finally {
             db.close()
-        }
-    }
-
-    private fun getNearbyStops(
-        db: SQLiteDatabase,
-        stopId: String,
-        cache: MutableMap<String, List<NearbyStop>>,
-        maxDistanceMeters: Double = MAX_WALK_TRANSFER_DISTANCE_METERS
-    ): List<NearbyStop> {
-        return cache.getOrPut(stopId) {
-            val coords = db.rawQuery(
-                "SELECT stop_lat, stop_lon FROM stops WHERE stop_id = ? AND stop_lat IS NOT NULL AND stop_lon IS NOT NULL LIMIT 1",
-                arrayOf(stopId)
-            ).use { cursor ->
-                if (cursor.moveToFirst() && !cursor.isNull(0) && !cursor.isNull(1)) {
-                    Pair(cursor.getDouble(0), cursor.getDouble(1))
-                } else null
-            } ?: return@getOrPut emptyList()
-
-            val lat = coords.first
-            val lon = coords.second
-            if (lat !in -90.0..90.0 || lon !in -180.0..180.0) return@getOrPut emptyList()
-
-            val deltaLat = maxDistanceMeters / 111000.0
-            val cosLat = cos(Math.toRadians(lat)).coerceAtLeast(0.1)
-            val deltaLon = maxDistanceMeters / (111000.0 * cosLat)
-
-            val minLat = (lat - deltaLat).toString()
-            val maxLat = (lat + deltaLat).toString()
-            val minLon = (lon - deltaLon).toString()
-            val maxLon = (lon + deltaLon).toString()
-
-            val sql = """
-                SELECT stop_id, COALESCE(stop_name, ''), stop_lat, stop_lon
-                FROM stops
-                WHERE stop_id != ?
-                  AND stop_lat BETWEEN ? AND ?
-                  AND stop_lon BETWEEN ? AND ?
-                ORDER BY ((stop_lat - ?) * (stop_lat - ?) + (stop_lon - ?) * (stop_lon - ?)) ASC
-                LIMIT 20
-            """.trimIndent()
-
-            db.rawQuery(
-                sql,
-                arrayOf(
-                    stopId,
-                    minLat, maxLat,
-                    minLon, maxLon,
-                    lat.toString(), lat.toString(),
-                    lon.toString(), lon.toString()
-                )
-            ).use { cursor ->
-                val list = mutableListOf<NearbyStop>()
-                while (cursor.moveToNext()) {
-                    val nId = cursor.getString(0) ?: continue
-                    val nName = cursor.getString(1) ?: ""
-                    val nLat = cursor.getDouble(2)
-                    val nLon = cursor.getDouble(3)
-                    val dist = calculateDistanceMeters(lat, lon, nLat, nLon) ?: continue
-                    if (dist <= maxDistanceMeters) {
-                        list.add(
-                            NearbyStop(
-                                stopId = nId,
-                                stopName = nName,
-                                distanceMeters = dist,
-                                walkMinutes = estimateWalkingMinutes(dist)
-                            )
-                        )
-                    }
-                }
-                list.sortedBy { it.distanceMeters }.take(6)
-            }
         }
     }
 
@@ -400,12 +426,10 @@ class TransitRouteEngine(
         )
 
         val foundJourneys = mutableListOf<Journey>()
+        var bestDestinationArrival: LocalDateTime? = null
 
-        val runsCache = object : LinkedHashMap<RunCacheKey, List<TripRun>>(16, 0.75f, true) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<RunCacheKey, List<TripRun>>?): Boolean {
-                return size > MAX_CACHED_PATTERN_RUNS
-            }
-        }
+        // מטמון נטול הגבלת 6 פריטים למשך החיפוש הנוכחי
+        val runsCache = mutableMapOf<RunCacheKey, List<TripRun>>()
 
         fun labelSignature(label: Label): String {
             val parts = mutableListOf<String>()
@@ -455,9 +479,10 @@ class TransitRouteEngine(
                 val stopsToExpand = mutableListOf<Pair<String, Long>>()
                 stopsToExpand.add(stopId to 0L)
 
-                // איתור תחנות סמוכות בטווח הליכה מתבצע רק אם המשתמש אפשר זאת
                 if (round > 1 && allowWalkingTransfers) {
-                    val nearby = getNearbyStops(db, stopId, nearbyStopsCache)
+                    val nearby = nearbyStopsCache.getOrPut(stopId) {
+                        getNearbyStopsFast(stopId)
+                    }
                     for (ns in nearby) {
                         stopsToExpand.add(ns.stopId to ns.walkMinutes)
                     }
@@ -466,6 +491,11 @@ class TransitRouteEngine(
                 for ((targetStopId, walkMinutes) in stopsToExpand) {
                     val positions = positionsByStop[targetStopId].orEmpty()
                     for (label in labels) {
+                        // גיזום: אם התווית מגיעה אחרי הגעה קיימת טובה יותר ליעד - דלג!
+                        if (bestDestinationArrival != null && label.arrivalAt.isAfter(bestDestinationArrival)) {
+                            continue
+                        }
+
                         for (position in positions) {
                             val pattern = patternsById[position.patternId] ?: continue
                             if (position.index >= pattern.stops.lastIndex) continue
@@ -505,14 +535,9 @@ class TransitRouteEngine(
                 for (serviceDate in serviceDates) {
                     val cacheKey = RunCacheKey(patternId = patternId, serviceDate = serviceDate)
 
-                    val runs = runsCache[cacheKey]
-                        ?: loadPatternRuns(
-                            db = db,
-                            pattern = pattern,
-                            serviceDate = serviceDate
-                        ).also {
-                            runsCache[cacheKey] = it
-                        }
+                    val runs = runsCache.getOrPut(cacheKey) {
+                        loadPatternRuns(db, pattern, serviceDate)
+                    }
 
                     for (run in runs) {
                         if (!matchesPattern(run, pattern)) continue
@@ -539,6 +564,11 @@ class TransitRouteEngine(
 
                             if (actualDepartureAt.isBefore(earliestBoarding)) continue
 
+                            // גיזום: נסיעה שיוצאת אחרי שכבר הגענו ליעד אינה יכולה לשפר
+                            if (bestDestinationArrival != null && actualDepartureAt.isAfter(bestDestinationArrival)) {
+                                continue
+                            }
+
                             if (containsTripOccurrence(boardLabel, run.tripId, actualDepartureAt)) {
                                 continue
                             }
@@ -553,6 +583,11 @@ class TransitRouteEngine(
                                     .plusSeconds(arrivalSeconds.toLong())
 
                                 if (arrivalAt.isBefore(actualDepartureAt)) continue
+
+                                // גיזום: ירידה שמאוחרת מההגעה הטובה ביותר הידועה
+                                if (bestDestinationArrival != null && arrivalAt.isAfter(bestDestinationArrival)) {
+                                    continue
+                                }
 
                                 val totalDuration = Duration.between(departureTime, arrivalAt).toMinutes()
                                 if (totalDuration < 0 || totalDuration > MAX_JOURNEY_MINUTES) continue
@@ -591,18 +626,19 @@ class TransitRouteEngine(
                 }
             }
 
-            // מציאת תוויות שהגיעו ליעד
+            // בדיקת הגעה ליעד
             val destinationCandidates = mutableListOf<Pair<Label, FinalWalk?>>()
 
             for (l in nextRound[destinationStopId].orEmpty()) {
                 destinationCandidates.add(l to null)
             }
 
-            // הליכה מסכמת לתחנת היעד מתאפשרת רק אם המשתמש לא חסם הליכה בין תחנות
             if (allowWalkingTransfers) {
                 for ((stopId, labels) in nextRound) {
                     if (stopId != destinationStopId) {
-                        val nearby = getNearbyStops(db, stopId, nearbyStopsCache)
+                        val nearby = nearbyStopsCache.getOrPut(stopId) {
+                            getNearbyStopsFast(stopId)
+                        }
                         val targetMatch = nearby.firstOrNull { it.stopId == destinationStopId }
                         if (targetMatch != null) {
                             val fromStopName = labels.firstOrNull()?.leg?.toStopName ?: stopId
@@ -629,6 +665,10 @@ class TransitRouteEngine(
                 val journey = buildJourney(destLabel, finalWalk)
                 if (journey.legs.isNotEmpty() && journey.transfers <= maxTransfers) {
                     foundJourneys.add(journey)
+                    // עדכון זמן ההגעה הטוב ביותר ליעד לצורך גיזום חכם
+                    if (bestDestinationArrival == null || journey.arrivalAt.isBefore(bestDestinationArrival)) {
+                        bestDestinationArrival = journey.arrivalAt
+                    }
                 }
             }
 

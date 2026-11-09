@@ -70,7 +70,8 @@ private class RouteVariantRepository(
                     COALESCE(s.stop_name, ''),
                     st.stop_sequence,
                     st.arrival_time,
-                    st.departure_time
+                    st.departure_time,
+                    COALESCE(NULLIF(s.stop_code, ''), s.stop_id) AS real_stop_code
                 FROM trips t
                 JOIN stop_times st ON st.trip_id = t.trip_id
                 LEFT JOIN stops s ON s.stop_id = st.stop_id
@@ -124,7 +125,8 @@ private class RouteVariantRepository(
                             name = cursor.getString(4) ?: "",
                             sequence = cursor.getInt(5),
                             arrivalTime = if (cursor.isNull(6)) null else cursor.getInt(6),
-                            departureTime = if (cursor.isNull(7)) null else cursor.getInt(7)
+                            departureTime = if (cursor.isNull(7)) null else cursor.getInt(7),
+                            stopCode = cursor.getString(8) ?: ""
                         )
                     )
                 }
@@ -192,14 +194,16 @@ fun LineSearchScreen(
             stopId = stop.stopId,
             name = stop.name,
             latitude = null,
-            longitude = null
+            longitude = null,
+            stopCode = stop.stopCode
         )
 
         AlertDialog(
             onDismissRequest = { clickedStopForAction = null },
             title = { Text(stop.name) },
             text = {
-                Text("מספר תחנה: ${stop.stopId}\nבחר פעולה לתחנה זו במסלול:")
+                val codeDisplay = if (stop.stopCode.isNotBlank()) "תחנה ${stop.stopCode}" else "מזהה: ${stop.stopId}"
+                Text("$codeDisplay\nבחר פעולה לתחנה זו במסלול:")
             },
             confirmButton = {
                 Row(
@@ -356,8 +360,9 @@ fun LineSearchScreen(
                                 style = MaterialTheme.typography.bodySmall
                             )
                             variant.stops.forEach { stop ->
+                                val codeSuffix = if (stop.stopCode.isNotBlank()) " (תחנה ${stop.stopCode})" else ""
                                 Text(
-                                    text = "${stop.sequence}. ${stop.name} (${stop.stopId})",
+                                    text = "${stop.sequence}. ${stop.name}$codeSuffix",
                                     style = MaterialTheme.typography.bodyMedium,
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -429,7 +434,6 @@ fun StopSearchScreen(
         }
     }
 
-    // תצוגת מפה ממוקדת על התחנה
     if (viewingMapForStop != null) {
         val stop = viewingMapForStop!!
         val lat = stop.latitude ?: 31.7683
@@ -456,9 +460,10 @@ fun StopSearchScreen(
                             fontSize = 18.sp
                         )
                         Text(
-                            text = "תחנה ${stop.stopId}",
+                            text = "תחנה ${stop.stopCode}",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Medium
                         )
                     }
 
@@ -539,7 +544,7 @@ fun StopSearchScreen(
                 value = query,
                 onValueChange = { query = it },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("שם תחנה או מספר תחנה") },
+                label = { Text("שם תחנה או מספר תחנה מהשלט (מק\"ט)") },
                 singleLine = true
             )
 
@@ -561,7 +566,12 @@ fun StopSearchScreen(
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Text(stop.name, fontWeight = FontWeight.Bold)
-                        Text("מספר תחנה: ${stop.stopId}", style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            "תחנה ${stop.stopCode}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Medium
+                        )
                     }
                 }
             }
@@ -572,7 +582,12 @@ fun StopSearchScreen(
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold
             )
-            Text("מספר תחנה: ${stop.stopId}")
+            Text(
+                text = "מספר תחנה (מק\"ט): ${stop.stopCode}",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold
+            )
 
             Row(
                 modifier = Modifier.fillMaxWidth(),

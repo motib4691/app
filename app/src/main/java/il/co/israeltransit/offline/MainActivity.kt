@@ -5,34 +5,13 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -43,7 +22,18 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import il.co.israeltransit.offline.database.TransitRepository
-import il.co.israeltransit.offline.maps.OfflineMapImportScreen
+import il.co.israeltransit.offline.maps.OfflineMapScreen
+
+sealed class AppScreen {
+    data object Home : AppScreen()
+    data object StopSearch : AppScreen()
+    data class LineSearch(val initialLineNumber: String? = null) : AppScreen()
+    data object RoutePlanner : AppScreen()
+    data object SavedStops : AppScreen()
+    data object OfflineMap : AppScreen()
+    data object UpdateData : AppScreen()
+    data object Settings : AppScreen()
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -58,9 +48,7 @@ class MainActivity : ComponentActivity() {
 fun TransitApp() {
     val context = LocalContext.current
     var settingsVersion by remember { mutableIntStateOf(0) }
-    val settings = remember(context, settingsVersion) {
-        TransitSettings(context)
-    }
+    val settings = remember(context, settingsVersion) { TransitSettings(context) }
 
     val isDark = when (settings.themeMode) {
         AppThemeMode.SYSTEM -> isSystemInDarkTheme()
@@ -85,105 +73,97 @@ fun TransitApp() {
         )
     }
 
-    var currentScreen by remember { mutableStateOf("home") }
+    val backStack = remember { mutableStateListOf<AppScreen>(AppScreen.Home) }
+    val currentScreen = backStack.lastOrNull() ?: AppScreen.Home
 
-    var routePlannerInitialOrigin by remember { mutableStateOf<TransitRepository.TransitStop?>(null) }
-    var routePlannerInitialDestination by remember { mutableStateOf<TransitRepository.TransitStop?>(null) }
-
-    BackHandler(enabled = currentScreen != "home") {
-        currentScreen = "home"
+    fun navigateTo(screen: AppScreen) {
+        backStack.add(screen)
     }
 
-    CompositionLocalProvider(
-        LocalLayoutDirection provides LayoutDirection.Rtl
-    ) {
+    fun navigateBack() {
+        if (backStack.size > 1) {
+            backStack.removeAt(backStack.lastIndex)
+        }
+    }
+
+    BackHandler(enabled = backStack.size > 1) {
+        navigateBack()
+    }
+
+    var plannerOrigin by remember { mutableStateOf<TransitRepository.TransitStop?>(null) }
+    var plannerDestination by remember { mutableStateOf<TransitRepository.TransitStop?>(null) }
+
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
         MaterialTheme(colorScheme = colorScheme) {
             Surface(
                 modifier = Modifier.fillMaxSize(),
                 color = MaterialTheme.colorScheme.background
             ) {
-                when (currentScreen) {
-                    "home" -> HomeScreen(
-                        onNavigate = { currentScreen = it }
-                    )
-
-                    "update" -> UpdateDataScreen(
-                        onBack = { currentScreen = "home" }
-                    )
-
-                    "line" -> LineSearchScreen(
-                        onBack = { currentScreen = "home" },
-                        onPlanRouteFrom = { stop ->
-                            routePlannerInitialOrigin = stop
-                            routePlannerInitialDestination = null
-                            currentScreen = "route"
+                when (val screen = currentScreen) {
+                    is AppScreen.Home -> HomeScreen(onNavigate = { navigateTo(it) })
+                    is AppScreen.StopSearch -> StopSearchScreen(
+                        onBack = { navigateBack() },
+                        onNavigateToLine = { lineNumber -> navigateTo(AppScreen.LineSearch(lineNumber)) },
+                        onPlanRouteFrom = {
+                            plannerOrigin = it
+                            plannerDestination = null
+                            navigateTo(AppScreen.RoutePlanner)
                         },
-                        onPlanRouteTo = { stop ->
-                            routePlannerInitialOrigin = null
-                            routePlannerInitialDestination = stop
-                            currentScreen = "route"
+                        onPlanRouteTo = {
+                            plannerOrigin = null
+                            plannerDestination = it
+                            navigateTo(AppScreen.RoutePlanner)
                         }
                     )
-
-                    "station" -> StopSearchScreen(
-                        onBack = { currentScreen = "home" },
-                        onPlanRouteFrom = { stop ->
-                            routePlannerInitialOrigin = stop
-                            routePlannerInitialDestination = null
-                            currentScreen = "route"
+                    is AppScreen.LineSearch -> LineSearchScreen(
+                        initialLine = screen.initialLineNumber,
+                        onBack = { navigateBack() },
+                        onNavigateToStop = { stop ->
+                            navigateTo(AppScreen.StopSearch)
                         },
-                        onPlanRouteTo = { stop ->
-                            routePlannerInitialOrigin = null
-                            routePlannerInitialDestination = stop
-                            currentScreen = "route"
+                        onPlanRouteFrom = {
+                            plannerOrigin = it
+                            plannerDestination = null
+                            navigateTo(AppScreen.RoutePlanner)
+                        },
+                        onPlanRouteTo = {
+                            plannerOrigin = null
+                            plannerDestination = it
+                            navigateTo(AppScreen.RoutePlanner)
                         }
                     )
-
-                    "saved" -> SavedStopsScreen(
-                        onBack = { currentScreen = "home" },
-                        onPlanRouteFrom = { stop ->
-                            routePlannerInitialOrigin = stop
-                            routePlannerInitialDestination = null
-                            currentScreen = "route"
-                        },
-                        onPlanRouteTo = { stop ->
-                            routePlannerInitialOrigin = null
-                            routePlannerInitialDestination = stop
-                            currentScreen = "route"
-                        }
-                    )
-
-                    "route" -> RoutePlannerScreen(
-                        onBack = { currentScreen = "home" },
-                        initialOrigin = routePlannerInitialOrigin,
-                        initialDestination = routePlannerInitialDestination,
+                    is AppScreen.RoutePlanner -> RoutePlannerScreen(
+                        onBack = { navigateBack() },
+                        initialOrigin = plannerOrigin,
+                        initialDestination = plannerDestination,
                         onClearInitialStops = {
-                            routePlannerInitialOrigin = null
-                            routePlannerInitialDestination = null
+                            plannerOrigin = null
+                            plannerDestination = null
                         }
                     )
-
-                    "map" -> OfflineMapImportScreen(
-                        onBack = { currentScreen = "home" },
-                        onPlanRouteFrom = { stop ->
-                            routePlannerInitialOrigin = stop
-                            routePlannerInitialDestination = null
-                            currentScreen = "route"
+                    is AppScreen.SavedStops -> SavedStopsScreen(
+                        onBack = { navigateBack() },
+                        onPlanRouteFrom = {
+                            plannerOrigin = it
+                            plannerDestination = null
+                            navigateTo(AppScreen.RoutePlanner)
                         },
-                        onPlanRouteTo = { stop ->
-                            routePlannerInitialOrigin = null
-                            routePlannerInitialDestination = stop
-                            currentScreen = "route"
+                        onPlanRouteTo = {
+                            plannerOrigin = null
+                            plannerDestination = it
+                            navigateTo(AppScreen.RoutePlanner)
                         }
                     )
-
-                    "settings" -> SettingsScreen(
-                        onBack = { currentScreen = "home" },
-                        onSettingsChanged = { settingsVersion++ }
+                    is AppScreen.OfflineMap -> OfflineMapScreen(
+                        onBack = { navigateBack() },
+                        onOpenStopDetails = { stop ->
+                            navigateTo(AppScreen.StopSearch)
+                        }
                     )
-
-                    else -> HomeScreen(
-                        onNavigate = { currentScreen = it }
+                    is AppScreen.UpdateData -> UpdateDataScreen(onBack = { navigateBack() })
+                    is AppScreen.Settings -> SettingsScreen(
+                        onBack = { navigateBack() },
+                        onSettingsChanged = { settingsVersion++ }
                     )
                 }
             }
@@ -191,60 +171,23 @@ fun TransitApp() {
     }
 }
 
-private data class HomeItemData(
+private data class HomeMenuItemData(
     val title: String,
     val description: String,
-    val screenKey: String,
+    val screen: AppScreen,
     val iconSymbol: String
 )
 
 @Composable
-private fun HomeScreen(
-    onNavigate: (String) -> Unit
-) {
+private fun HomeScreen(onNavigate: (AppScreen) -> Unit) {
     val items = listOf(
-        HomeItemData(
-            title = "תכנון מסלול",
-            description = "מציאת מסלול נסיעה בין שתי נקודות",
-            screenKey = "route",
-            iconSymbol = "🧭"
-        ),
-        HomeItemData(
-            title = "חיפוש קו",
-            description = "חיפוש קווים לפי מספר ומפעיל",
-            screenKey = "line",
-            iconSymbol = "🚌"
-        ),
-        HomeItemData(
-            title = "חיפוש תחנה",
-            description = "איתור תחנות וקווים העוברים בהן",
-            screenKey = "station",
-            iconSymbol = "🚏"
-        ),
-        HomeItemData(
-            title = "התחנות שלי",
-            description = "התחנות ששמרת לשימוש מהיר",
-            screenKey = "saved",
-            iconSymbol = "⭐"
-        ),
-        HomeItemData(
-            title = "עדכון נתונים",
-            description = "ייבוא ועדכון מאגר התחבורה",
-            screenKey = "update",
-            iconSymbol = "🔄"
-        ),
-        HomeItemData(
-            title = "מפה לא מקוונת",
-            description = "התקנת מפה ותצוגת תחנות התחבורה",
-            screenKey = "map",
-            iconSymbol = "🗺️"
-        ),
-        HomeItemData(
-            title = "הגדרות",
-            description = "התאמת כמות החלפות, מרווח ביטחון ומראה",
-            screenKey = "settings",
-            iconSymbol = "⚙️"
-        )
+        HomeMenuItemData("תכנון מסלול", "מציאת מסלול נסיעה בין שתי נקודות", AppScreen.RoutePlanner, "🧭"),
+        HomeMenuItemData("חיפוש קו", "חיפוש קווים לפי מספר ומפעיל", AppScreen.LineSearch(), "🚌"),
+        HomeMenuItemData("חיפוש תחנה", "איתור תחנות וקווים העוברים בהן", AppScreen.StopSearch, "🚏"),
+        HomeMenuItemData("מפה לא מקוונת", "מפה אינטראקטיבית, איתור תחנות וערי ישראל", AppScreen.OfflineMap, "🗺️"),
+        HomeMenuItemData("התחנות שלי", "התחנות ששמרת לשימוש מהיר", AppScreen.SavedStops, "⭐"),
+        HomeMenuItemData("עדכון נתונים", "ייבוא ועדכון מאגר התחבורה וקובץ המפה", AppScreen.UpdateData, "🔄"),
+        HomeMenuItemData("הגדרות", "התאמת החלפות, מרווחים, רטט בירידה ומראה", AppScreen.Settings, "⚙️")
     )
 
     Column(
@@ -255,112 +198,74 @@ private fun HomeScreen(
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
-            text = "תחבורה ציבורית בישראל",
-            fontSize = 25.sp,
+            text = "IsraelOfflineTransit",
+            fontSize = 24.sp,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.primary
         )
-
-        Spacer(modifier = Modifier.height(6.dp))
-
         Text(
-            text = "תכנון נסיעות וחיפוש מידע גם ללא חיבור לאינטרנט",
-            fontSize = 14.sp,
+            text = "תחבורה ציבורית לא-מקוונת בישראל",
+            fontSize = 13.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(20.dp))
 
         items.forEach { item ->
-            HomeMenuItem(
-                title = item.title,
-                description = item.description,
-                iconSymbol = item.iconSymbol,
-                onClick = { onNavigate(item.screenKey) }
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Text(
-            text = "מאגר נתונים מקומי ללא צורך באינטרנט",
-            fontSize = 12.sp,
-            color = MaterialTheme.colorScheme.outline
-        )
-    }
-}
-
-@Composable
-private fun HomeMenuItem(
-    title: String,
-    description: String,
-    iconSymbol: String,
-    onClick: () -> Unit
-) {
-    Card(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
-        elevation = CardDefaults.cardElevation(
-            defaultElevation = 2.dp
-        )
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                modifier = Modifier.size(48.dp)
+            Card(
+                onClick = { onNavigate(item.screen) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 5.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
             ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(
-                        text = iconSymbol,
-                        fontSize = 24.sp
-                    )
-                }
-            }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+                        modifier = Modifier.size(44.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(text = item.iconSymbol, fontSize = 22.sp)
+                        }
+                    }
 
-            Column(
-                modifier = Modifier.weight(1f)
-            ) {
-                Text(
-                    text = title,
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = item.title,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = item.description,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
 
-                Spacer(modifier = Modifier.height(3.dp))
-
-                Text(
-                    text = description,
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                modifier = Modifier.size(32.dp)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(
-                        text = "←",
-                        fontSize = 16.sp,
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                text = "←",
+                                fontSize = 14.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
                 }
             }
         }

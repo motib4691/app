@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -21,14 +22,19 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import il.co.israeltransit.offline.database.TransitDatabase
 import il.co.israeltransit.offline.database.TransitRepository
 import il.co.israeltransit.offline.maps.OfflineMapScreen
 
 sealed class AppScreen {
     data object Home : AppScreen()
-    data object StopSearch : AppScreen()
+    data class StopSearch(val initialStop: TransitRepository.TransitStop? = null) : AppScreen()
     data class LineSearch(val initialLineNumber: String? = null) : AppScreen()
-    data object RoutePlanner : AppScreen()
+    data class RoutePlanner(
+        val initialOrigin: TransitRepository.TransitStop? = null,
+        val initialDestination: TransitRepository.TransitStop? = null,
+        val focusDestination: Boolean = false
+    ) : AppScreen()
     data object SavedStops : AppScreen()
     data object OfflineMap : AppScreen()
     data object UpdateData : AppScreen()
@@ -49,6 +55,7 @@ fun TransitApp() {
     val context = LocalContext.current
     var settingsVersion by remember { mutableIntStateOf(0) }
     val settings = remember(context, settingsVersion) { TransitSettings(context) }
+    val database = remember(context) { TransitDatabase(context) }
 
     val isDark = when (settings.themeMode) {
         AppThemeMode.SYSTEM -> isSystemInDarkTheme()
@@ -62,14 +69,16 @@ fun TransitApp() {
             primary = colorTheme.primary,
             secondary = colorTheme.secondary,
             background = colorTheme.backgroundDark,
-            surface = Color(0xFF1E1E1E)
+            surface = colorTheme.surfaceDark,
+            surfaceVariant = colorTheme.accentSoftDark
         )
     } else {
         lightColorScheme(
             primary = colorTheme.primary,
             secondary = colorTheme.secondary,
             background = colorTheme.backgroundLight,
-            surface = Color.White
+            surface = colorTheme.surfaceLight,
+            surfaceVariant = colorTheme.accentSoftLight
         )
     }
 
@@ -80,8 +89,16 @@ fun TransitApp() {
         backStack.add(screen)
     }
 
+    // כפתור אנדרואיד חוזר מסך אחד אחורה
     fun navigateBack() {
         if (backStack.size > 1) {
+            backStack.removeAt(backStack.lastIndex)
+        }
+    }
+
+    // כפתור מובנה במסך מחזיר ישירות למסך הבית
+    fun navigateHome() {
+        while (backStack.size > 1) {
             backStack.removeAt(backStack.lastIndex)
         }
     }
@@ -90,8 +107,57 @@ fun TransitApp() {
         navigateBack()
     }
 
-    var plannerOrigin by remember { mutableStateOf<TransitRepository.TransitStop?>(null) }
-    var plannerDestination by remember { mutableStateOf<TransitRepository.TransitStop?>(null) }
+    // בדיקת התראת החלפת שעון קיץ / חורף
+    var clockAlert by remember {
+        mutableStateOf(settings.checkClockChangeAlert(database.getLastUpdateDate()))
+    }
+
+    clockAlert?.let { alert ->
+        AlertDialog(
+            onDismissRequest = { clockAlert = null },
+            title = {
+                Text(
+                    text = alert.title,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            },
+            text = {
+                Text(
+                    text = alert.message,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        clockAlert = null
+                        navigateTo(AppScreen.UpdateData)
+                    },
+                    shape = RoundedCornerShape(20.dp)
+                ) {
+                    Text("עדכון נתונים")
+                }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(
+                        onClick = {
+                            settings.dismissedClockChangeId = alert.transitionId
+                            clockAlert = null
+                        }
+                    ) {
+                        Text("אל תראה שוב")
+                    }
+                    TextButton(
+                        onClick = { clockAlert = null }
+                    ) {
+                        Text("סגור")
+                    }
+                }
+            }
+        )
+    }
 
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
         MaterialTheme(colorScheme = colorScheme) {
@@ -101,68 +167,101 @@ fun TransitApp() {
             ) {
                 when (val screen = currentScreen) {
                     is AppScreen.Home -> HomeScreen(onNavigate = { navigateTo(it) })
+
                     is AppScreen.StopSearch -> StopSearchScreen(
-                        onBack = { navigateBack() },
-                        onNavigateToLine = { lineNumber -> navigateTo(AppScreen.LineSearch(lineNumber)) },
-                        onPlanRouteFrom = {
-                            plannerOrigin = it
-                            plannerDestination = null
-                            navigateTo(AppScreen.RoutePlanner)
+                        initialStop = screen.initialStop,
+                        onBack = { navigateHome() },
+                        onNavigateToLine = { lineNumber ->
+                            navigateTo(AppScreen.LineSearch(lineNumber))
                         },
-                        onPlanRouteTo = {
-                            plannerOrigin = null
-                            plannerDestination = it
-                            navigateTo(AppScreen.RoutePlanner)
+                        onPlanRouteFrom = { stop ->
+                            navigateTo(
+                                AppScreen.RoutePlanner(
+                                    initialOrigin = stop,
+                                    initialDestination = null,
+                                    focusDestination = true
+                                )
+                            )
+                        },
+                        onPlanRouteTo = { stop ->
+                            navigateTo(
+                                AppScreen.RoutePlanner(
+                                    initialOrigin = null,
+                                    initialDestination = stop,
+                                    focusDestination = false
+                                )
+                            )
                         }
                     )
+
                     is AppScreen.LineSearch -> LineSearchScreen(
                         initialLine = screen.initialLineNumber,
-                        onBack = { navigateBack() },
+                        onBack = { navigateHome() },
                         onNavigateToStop = { stop ->
-                            navigateTo(AppScreen.StopSearch)
+                            navigateTo(AppScreen.StopSearch(initialStop = stop))
                         },
-                        onPlanRouteFrom = {
-                            plannerOrigin = it
-                            plannerDestination = null
-                            navigateTo(AppScreen.RoutePlanner)
+                        onPlanRouteFrom = { stop ->
+                            navigateTo(
+                                AppScreen.RoutePlanner(
+                                    initialOrigin = stop,
+                                    initialDestination = null,
+                                    focusDestination = true
+                                )
+                            )
                         },
-                        onPlanRouteTo = {
-                            plannerOrigin = null
-                            plannerDestination = it
-                            navigateTo(AppScreen.RoutePlanner)
+                        onPlanRouteTo = { stop ->
+                            navigateTo(
+                                AppScreen.RoutePlanner(
+                                    initialOrigin = null,
+                                    initialDestination = stop,
+                                    focusDestination = false
+                                )
+                            )
                         }
                     )
+
                     is AppScreen.RoutePlanner -> RoutePlannerScreen(
-                        onBack = { navigateBack() },
-                        initialOrigin = plannerOrigin,
-                        initialDestination = plannerDestination,
-                        onClearInitialStops = {
-                            plannerOrigin = null
-                            plannerDestination = null
-                        }
+                        onBack = { navigateHome() },
+                        initialOrigin = screen.initialOrigin,
+                        initialDestination = screen.initialDestination,
+                        focusDestinationInitially = screen.focusDestination
                     )
+
                     is AppScreen.SavedStops -> SavedStopsScreen(
-                        onBack = { navigateBack() },
-                        onPlanRouteFrom = {
-                            plannerOrigin = it
-                            plannerDestination = null
-                            navigateTo(AppScreen.RoutePlanner)
+                        onBack = { navigateHome() },
+                        onPlanRouteFrom = { stop ->
+                            navigateTo(
+                                AppScreen.RoutePlanner(
+                                    initialOrigin = stop,
+                                    initialDestination = null,
+                                    focusDestination = true
+                                )
+                            )
                         },
-                        onPlanRouteTo = {
-                            plannerOrigin = null
-                            plannerDestination = it
-                            navigateTo(AppScreen.RoutePlanner)
+                        onPlanRouteTo = { stop ->
+                            navigateTo(
+                                AppScreen.RoutePlanner(
+                                    initialOrigin = null,
+                                    initialDestination = stop,
+                                    focusDestination = false
+                                )
+                            )
                         }
                     )
+
                     is AppScreen.OfflineMap -> OfflineMapScreen(
-                        onBack = { navigateBack() },
+                        onBack = { navigateHome() },
                         onOpenStopDetails = { stop ->
-                            navigateTo(AppScreen.StopSearch)
+                            navigateTo(AppScreen.StopSearch(initialStop = stop))
                         }
                     )
-                    is AppScreen.UpdateData -> UpdateDataScreen(onBack = { navigateBack() })
+
+                    is AppScreen.UpdateData -> UpdateDataScreen(
+                        onBack = { navigateHome() }
+                    )
+
                     is AppScreen.Settings -> SettingsScreen(
-                        onBack = { navigateBack() },
+                        onBack = { navigateHome() },
                         onSettingsChanged = { settingsVersion++ }
                     )
                 }
@@ -175,15 +274,16 @@ private data class HomeMenuItemData(
     val title: String,
     val description: String,
     val screen: AppScreen,
-    val iconSymbol: String
+    val iconSymbol: String,
+    val badgeColor: Color? = null
 )
 
 @Composable
 private fun HomeScreen(onNavigate: (AppScreen) -> Unit) {
     val items = listOf(
-        HomeMenuItemData("תכנון מסלול", "מציאת מסלול נסיעה בין שתי נקודות", AppScreen.RoutePlanner, "🧭"),
-        HomeMenuItemData("חיפוש קו", "חיפוש קווים לפי מספר ומפעיל", AppScreen.LineSearch(), "🚌"),
-        HomeMenuItemData("חיפוש תחנה", "איתור תחנות וקווים העוברים בהן", AppScreen.StopSearch, "🚏"),
+        HomeMenuItemData("תכנון מסלול", "מציאת מסלול נסיעה בין שתי נקודות", AppScreen.RoutePlanner(), "🧭"),
+        HomeMenuItemData("חיפוש קו", "חיפוש קווים לפי מספר, עיר ומפעיל", AppScreen.LineSearch(), "🚌"),
+        HomeMenuItemData("חיפוש תחנה", "איתור תחנות וקווים העוברים בהן", AppScreen.StopSearch(), "🚏"),
         HomeMenuItemData("מפה לא מקוונת", "מפה אינטראקטיבית, איתור תחנות וערי ישראל", AppScreen.OfflineMap, "🗺️"),
         HomeMenuItemData("התחנות שלי", "התחנות ששמרת לשימוש מהיר", AppScreen.SavedStops, "⭐"),
         HomeMenuItemData("עדכון נתונים", "ייבוא ועדכון מאגר התחבורה וקובץ המפה", AppScreen.UpdateData, "🔄"),
@@ -194,32 +294,49 @@ private fun HomeScreen(onNavigate: (AppScreen) -> Unit) {
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 28.dp),
+            .padding(horizontal = 20.dp, vertical = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text(
-            text = "IsraelOfflineTransit",
-            fontSize = 24.sp,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.primary
-        )
-        Text(
-            text = "תחבורה ציבורית לא-מקוונת בישראל",
-            fontSize = 13.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "IsraelOfflineTransit",
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "תחבורה ציבורית לא-מקוונת בישראל",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(18.dp))
 
         items.forEach { item ->
             Card(
                 onClick = { onNavigate(item.screen) },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 5.dp),
-                shape = RoundedCornerShape(14.dp),
+                    .padding(vertical = 5.dp)
+                    .border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                        shape = RoundedCornerShape(16.dp)
+                    ),
+                shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
             ) {
                 Row(
                     modifier = Modifier
@@ -229,12 +346,12 @@ private fun HomeScreen(onNavigate: (AppScreen) -> Unit) {
                     horizontalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
-                        modifier = Modifier.size(44.dp)
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                        modifier = Modifier.size(46.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
-                            Text(text = item.iconSymbol, fontSize = 22.sp)
+                            Text(text = item.iconSymbol, fontSize = 24.sp)
                         }
                     }
 
@@ -245,6 +362,7 @@ private fun HomeScreen(onNavigate: (AppScreen) -> Unit) {
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
+                        Spacer(modifier = Modifier.height(2.dp))
                         Text(
                             text = item.description,
                             fontSize = 12.sp,
@@ -254,13 +372,13 @@ private fun HomeScreen(onNavigate: (AppScreen) -> Unit) {
 
                     Surface(
                         shape = CircleShape,
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                        modifier = Modifier.size(28.dp)
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+                        modifier = Modifier.size(30.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Text(
                                 text = "←",
-                                fontSize = 14.sp,
+                                fontSize = 15.sp,
                                 color = MaterialTheme.colorScheme.primary,
                                 fontWeight = FontWeight.Bold
                             )

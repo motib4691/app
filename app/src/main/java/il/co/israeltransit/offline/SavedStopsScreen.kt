@@ -1,6 +1,7 @@
 package il.co.israeltransit.offline
 
 import android.content.Context
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,10 +11,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -34,6 +37,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import il.co.israeltransit.offline.database.TransitDatabase
 import il.co.israeltransit.offline.database.TransitRepository
+import il.co.israeltransit.offline.ui.RouteFromButton
+import il.co.israeltransit.offline.ui.RouteToButton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -120,6 +125,16 @@ fun SavedStopsScreen(
     var editingStop by remember { mutableStateOf<SavedStop?>(null) }
     var customName by remember { mutableStateOf("") }
 
+    val savedRefs = remember(savedStops) {
+        savedStops.map {
+            TransitRepository.SavedStopRef(
+                stopId = it.stopId,
+                customName = it.customName,
+                stopCode = it.stopCode
+            )
+        }
+    }
+
     fun persist(stops: List<SavedStop>) {
         savedStops = stops
         storage.save(stops)
@@ -135,7 +150,7 @@ fun SavedStopsScreen(
             delay(250)
             searching = true
             searchResults = withContext(Dispatchers.IO) {
-                repository.searchStops(value, 50)
+                repository.searchStops(value, 50, savedRefs)
             }
             searching = false
         }
@@ -153,27 +168,34 @@ fun SavedStopsScreen(
                 editingStop = null
             },
             title = {
-                Text(if (isEditing) "שינוי שם התחנה" else "שמירת תחנה")
+                Text(
+                    text = if (isEditing) "שינוי שם התחנה" else "שמירת תחנה",
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(stopName, fontWeight = FontWeight.Bold)
+                    Text(stopName, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     Text(
                         "מספר תחנה (מק\"ט): $stopCode",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.Medium
                     )
+                    Spacer(modifier = Modifier.height(4.dp))
                     OutlinedTextField(
                         value = customName,
                         onValueChange = { customName = it },
                         label = { Text("שם אישי, למשל בית או עבודה") },
-                        singleLine = true
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
             },
             confirmButton = {
-                TextButton(
+                Button(
                     onClick = {
                         val name = customName.trim()
                         if (name.isNotEmpty()) {
@@ -194,6 +216,7 @@ fun SavedStopsScreen(
                         dialogStop = null
                         editingStop = null
                     },
+                    shape = RoundedCornerShape(20.dp),
                     enabled = customName.trim().isNotEmpty()
                 ) {
                     Text("שמירה")
@@ -217,8 +240,9 @@ fun SavedStopsScreen(
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        // כותרת עליונה + כפתור חזרה למסך הבית
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -227,42 +251,64 @@ fun SavedStopsScreen(
             Text(
                 "התחנות שלי",
                 style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
             )
 
-            Button(onClick = onBack) {
-                Text("חזרה")
+            OutlinedButton(
+                onClick = onBack,
+                shape = RoundedCornerShape(20.dp)
+            ) {
+                Text("חזרה למסך הבית")
             }
         }
 
-        Text("שמור תחנות חשובות כדי למצוא אותן ולתכנן אליהן מסלולים במהירות.")
+        Text(
+            text = "שמור תחנות חשובות עם שם אישי כדי למצוא אותן ולתכנן אליהן מסלולים במהירות.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
 
         OutlinedTextField(
             value = query,
             onValueChange = { query = it },
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("חיפוש תחנה לפי שם או מספר מהשלט (מק\"ט)") },
-            singleLine = true
+            label = { Text("חיפוש תחנה להוספה (לפי שם או מק\"ט)") },
+            singleLine = true,
+            shape = RoundedCornerShape(12.dp),
+            trailingIcon = {
+                if (query.isNotEmpty()) {
+                    TextButton(onClick = { query = "" }) { Text("✕") }
+                }
+            }
         )
 
         if (!database.isDatabaseAvailable()) {
             Text("יש להתקין תחילה מאגר נתונים במסך עדכון נתונים.")
         } else if (searching) {
-            CircularProgressIndicator()
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                CircularProgressIndicator()
+            }
         } else if (query.isNotBlank()) {
             if (searchResults.isEmpty()) {
                 Text("לא נמצאו תחנות מתאימות.")
             }
 
             searchResults.forEach { stop ->
-                Card(modifier = Modifier.fillMaxWidth()) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                    elevation = CardDefaults.cardElevation(2.dp)
+                ) {
                     Column(
                         modifier = Modifier.padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Text(stop.name, fontWeight = FontWeight.Bold)
+                        Text(stop.name, fontWeight = FontWeight.Bold, fontSize = 14.5.sp)
                         Text(
-                            "תחנה ${stop.stopCode}",
+                            "מספר תחנה (מק\"ט): ${stop.stopCode}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.Medium
@@ -272,49 +318,76 @@ fun SavedStopsScreen(
 
                         Button(
                             onClick = {
-                                customName = stop.name
+                                customName = stop.customName ?: stop.name
                                 dialogStop = stop
                             },
+                            shape = RoundedCornerShape(20.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text(if (alreadySaved) "עדכון השם האישי" else "הוספה לתחנות שלי")
+                            Text(if (alreadySaved) "עדכון השם האישי" else "⭐ הוספה לתחנות שלי")
                         }
                     }
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(4.dp))
 
         Text(
             "התחנות השמורות",
             style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary
         )
 
         if (savedStops.isEmpty()) {
-            Text("עדיין לא שמרת תחנות. חפש תחנה למעלה והוסף אותה לרשימה.")
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.06f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = "עדיין לא שמרת תחנות. חפש תחנה בשדה למעלה והוסף אותה לרשימה.",
+                    modifier = Modifier.padding(16.dp),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
         }
 
         savedStops.forEach { stop ->
-            Card(modifier = Modifier.fillMaxWidth()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                elevation = CardDefaults.cardElevation(2.dp)
+            ) {
                 Column(
                     modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text(
-                        stop.customName,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "⭐ ${stop.customName}",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "תחנה ${stop.stopCode}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                    }
 
-                    Text(stop.stopName)
                     Text(
-                        "תחנה ${stop.stopCode}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Medium
+                        text = stop.stopName,
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
                     val transitStop = TransitRepository.TransitStop(
@@ -322,32 +395,31 @@ fun SavedStopsScreen(
                         name = stop.stopName,
                         latitude = null,
                         longitude = null,
-                        stopCode = stop.stopCode
+                        stopCode = stop.stopCode,
+                        customName = stop.customName
                     )
 
+                    // שורת כפתורי ניווט אחידים עם האייקונים הקבועים (📍 ו-🏁)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         if (onPlanRouteFrom != null) {
-                            Button(
+                            RouteFromButton(
                                 onClick = { onPlanRouteFrom(transitStop) },
                                 modifier = Modifier.weight(1f)
-                            ) {
-                                Text("מסלול מכאן", fontSize = 13.sp)
-                            }
+                            )
                         }
 
                         if (onPlanRouteTo != null) {
-                            Button(
+                            RouteToButton(
                                 onClick = { onPlanRouteTo(transitStop) },
                                 modifier = Modifier.weight(1f)
-                            ) {
-                                Text("מסלול לכאן", fontSize = 13.sp)
-                            }
+                            )
                         }
                     }
 
+                    // שורת פעולות ניהול
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -357,18 +429,20 @@ fun SavedStopsScreen(
                                 editingStop = stop
                                 customName = stop.customName
                             },
+                            shape = RoundedCornerShape(20.dp),
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("שינוי שם")
+                            Text("שינוי שם", fontSize = 12.sp)
                         }
 
                         OutlinedButton(
                             onClick = {
                                 persist(savedStops.filterNot { it.stopId == stop.stopId })
                             },
+                            shape = RoundedCornerShape(20.dp),
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("הסרה")
+                            Text("הסרה", fontSize = 12.sp)
                         }
                     }
                 }

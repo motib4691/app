@@ -4,8 +4,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -16,6 +21,33 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 object OperatorTheme {
+
+    const val ICON_ROUTE_FROM = "📍"
+    const val ICON_ROUTE_TO = "🏁"
+
+    /**
+     * רשימת כל מפעילי התחבורה הציבורית בישראל לבחירה מהירה בסינון
+     */
+    val ALL_OPERATORS = listOf(
+        "אגד",
+        "דן",
+        "מטרופולין",
+        "קווים",
+        "אלקטרה אפיקים",
+        "סופרבוס",
+        "תנופה",
+        "רכבת ישראל",
+        "כפיר (רכבת קלה ירושלים)",
+        "דנקל (תבל מטרו ת\"א)",
+        "דן בדרום",
+        "דן באר שבע",
+        "בית שמש אקספרס",
+        "נתיב אקספרס",
+        "גלים",
+        "ש.א.מ (נצרת)",
+        "נסיעות ותיירות נצרת"
+    )
+
     fun getOperatorColor(agencyName: String): Color {
         val name = agencyName.trim()
         return when {
@@ -31,7 +63,8 @@ object OperatorTheme {
             name.contains("תבל") || name.contains("דנקל") -> Color(0xFF00695C)
             name.contains("בית שמש") -> Color(0xFF880E4F)
             name.contains("נתיב אקספרס") -> Color(0xFF37474F)
-            else -> Color(0xFF1976D2)
+            name.contains("דן בדרום") || name.contains("דן באר שבע") -> Color(0xFF1976D2)
+            else -> Color(0xFF1E5B94)
         }
     }
 
@@ -60,14 +93,74 @@ fun TransitLineBadge(
 
     Box(
         modifier = modifier
-            .border(width = 1.2.dp, color = color, shape = RoundedCornerShape(8.dp))
-            .background(color = color.copy(alpha = 0.10f), shape = RoundedCornerShape(8.dp))
-            .padding(horizontal = 6.dp, vertical = 2.dp),
+            .border(width = 1.3.dp, color = color, shape = RoundedCornerShape(8.dp))
+            .background(color = color.copy(alpha = 0.12f), shape = RoundedCornerShape(8.dp))
+            .padding(horizontal = 7.dp, vertical = 3.dp),
         contentAlignment = Alignment.Center
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(text = icon, fontSize = 11.sp, modifier = Modifier.padding(end = 3.dp))
-            Text(text = lineNumber, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = color)
+            Text(text = icon, fontSize = 12.sp)
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = lineNumber,
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+                color = color
+            )
+        }
+    }
+}
+
+/**
+ * כפתור אחיד ומעוצב עבור "מסלול מכאן" בכל רחבי האפליקציה
+ */
+@Composable
+fun RouteFromButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
+) {
+    FilledTonalButton(
+        onClick = onClick,
+        modifier = modifier,
+        enabled = enabled,
+        shape = RoundedCornerShape(20.dp),
+        colors = ButtonDefaults.filledTonalButtonColors(
+            containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+            contentColor = MaterialTheme.colorScheme.primary
+        )
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(OperatorTheme.ICON_ROUTE_FROM, fontSize = 13.sp)
+            Spacer(modifier = Modifier.width(4.dp))
+            Text("מסלול מכאן", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+/**
+ * כפתור אחיד ומעוצב עבור "מסלול לכאן" בכל רחבי האפליקציה
+ */
+@Composable
+fun RouteToButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
+) {
+    FilledTonalButton(
+        onClick = onClick,
+        modifier = modifier,
+        enabled = enabled,
+        shape = RoundedCornerShape(20.dp),
+        colors = ButtonDefaults.filledTonalButtonColors(
+            containerColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.14f),
+            contentColor = MaterialTheme.colorScheme.secondary
+        )
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(OperatorTheme.ICON_ROUTE_TO, fontSize = 13.sp)
+            Spacer(modifier = Modifier.width(4.dp))
+            Text("מסלול לכאן", fontSize = 12.sp, fontWeight = FontWeight.Bold)
         }
     }
 }

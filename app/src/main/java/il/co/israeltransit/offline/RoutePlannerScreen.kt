@@ -8,6 +8,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -21,9 +22,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -105,9 +108,11 @@ fun RoutePlannerScreen(
     onBack: () -> Unit,
     initialOrigin: TransitRepository.TransitStop? = null,
     initialDestination: TransitRepository.TransitStop? = null,
+    focusDestinationInitially: Boolean = false,
     onClearInitialStops: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val clipboardManager = LocalClipboardManager.current
 
     val database = remember(context) { TransitDatabase(context) }
@@ -119,17 +124,32 @@ fun RoutePlannerScreen(
     val locationControl = remember(context) { TransitMyLocationControl(context) }
 
     val scope = rememberCoroutineScope()
+    val scrollState = rememberScrollState()
 
-    var originQuery by remember { mutableStateOf("") }
-    var destinationQuery by remember { mutableStateOf("") }
+    val savedStops = remember(context) { loadPlannerSavedStops(context) }
+    val savedRefs = remember(savedStops) {
+        savedStops.map {
+            TransitRepository.SavedStopRef(
+                stopId = it.stopId,
+                customName = it.customName,
+                stopCode = it.stopCode
+            )
+        }
+    }
+
+    var originQuery by remember { mutableStateOf(initialOrigin?.name.orEmpty()) }
+    var destinationQuery by remember { mutableStateOf(initialDestination?.name.orEmpty()) }
 
     var originResults by remember { mutableStateOf(emptyList<TransitRepository.DualStopGroup>()) }
     var destinationResults by remember { mutableStateOf(emptyList<TransitRepository.DualStopGroup>()) }
 
-    var selectedOrigin by remember { mutableStateOf<TransitRepository.TransitStop?>(null) }
-    var selectedDestination by remember { mutableStateOf<TransitRepository.TransitStop?>(null) }
+    var selectedOrigin by remember { mutableStateOf(initialOrigin) }
+    var selectedDestination by remember { mutableStateOf(initialDestination) }
 
-    var activeField by remember { mutableStateOf("origin") }
+    var activeField by remember {
+        mutableStateOf(if (focusDestinationInitially || initialOrigin != null) "destination" else "origin")
+    }
+
     var searching by remember { mutableStateOf(false) }
     var calculating by remember { mutableStateOf(false) }
     var detectingLocation by remember { mutableStateOf(false) }
@@ -145,14 +165,44 @@ fun RoutePlannerScreen(
     var pickingOnMapForField by remember { mutableStateOf<String?>(null) }
     var showMapNotInstalledDialog by remember { mutableStateOf(false) }
 
-    val savedStops = remember(context) { loadPlannerSavedStops(context) }
-
     val originFocusRequester = remember { FocusRequester() }
     val destFocusRequester = remember { FocusRequester() }
 
+    fun searchRoute() {
+        val origin = selectedOrigin ?: return
+        val destination = selectedDestination ?: return
+
+        if (origin.stopId == destination.stopId || calculating) return
+
+        calculating = true
+        routeResult = null
+        expandedJourneyIndex = -1
+
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                routeEngine.findJourneys(
+                    originStopId = origin.stopId,
+                    destinationStopId = destination.stopId,
+                    departureTime = departureTime,
+                    maxTransfers = settings.maxTransfers,
+                    minimumTransferMinutes = settings.minTransferMinutes.toLong(),
+                    allowWalkingTransfers = settings.allowWalkingTransfers,
+                    maxResults = 5
+                )
+            }
+            routeResult = result
+            calculating = false
+        }
+    }
+
     LaunchedEffect(Unit) {
         delay(250)
-        originFocusRequester.requestFocus()
+        if (focusDestinationInitially || initialOrigin != null) {
+            destFocusRequester.requestFocus()
+            scrollState.animateScrollTo(260)
+        } else {
+            originFocusRequester.requestFocus()
+        }
     }
 
     fun findAndSetNearestStopFromGPS() {
@@ -178,6 +228,7 @@ fun RoutePlannerScreen(
                         Toast.LENGTH_SHORT
                     ).show()
                     destFocusRequester.requestFocus()
+                    scrollState.animateScrollTo(260)
                 } else {
                     Toast.makeText(
                         context,
@@ -223,7 +274,6 @@ fun RoutePlannerScreen(
             selectedDestination = initialDestination
             destinationQuery = initialDestination.name
             destinationResults = emptyList()
-            activeField = "origin"
         }
         if (initialOrigin != null || initialDestination != null) {
             routeResult = null
@@ -231,60 +281,35 @@ fun RoutePlannerScreen(
         }
     }
 
+    // חיפוש מוצא - לא מקפיץ הצעה אם התחנה כבר נבחרה
     LaunchedEffect(originQuery, activeField) {
         if (activeField != "origin") return@LaunchedEffect
         val value = originQuery.trim()
-        if (value.isEmpty()) {
+        if (value.isEmpty() || (selectedOrigin != null && value == selectedOrigin?.name)) {
             originResults = emptyList()
         } else {
             delay(200)
             searching = true
             originResults = withContext(Dispatchers.IO) {
-                repository.searchGroupedStops(value, 30)
+                repository.searchGroupedStops(value, 30, savedRefs)
             }
             searching = false
         }
     }
 
+    // חיפוש יעד - לא מקפיץ הצעה אם התחנה כבר נבחרה
     LaunchedEffect(destinationQuery, activeField) {
         if (activeField != "destination") return@LaunchedEffect
         val value = destinationQuery.trim()
-        if (value.isEmpty()) {
+        if (value.isEmpty() || (selectedDestination != null && value == selectedDestination?.name)) {
             destinationResults = emptyList()
         } else {
             delay(200)
             searching = true
             destinationResults = withContext(Dispatchers.IO) {
-                repository.searchGroupedStops(value, 30)
+                repository.searchGroupedStops(value, 30, savedRefs)
             }
             searching = false
-        }
-    }
-
-    fun searchRoute() {
-        val origin = selectedOrigin ?: return
-        val destination = selectedDestination ?: return
-
-        if (origin.stopId == destination.stopId || calculating) return
-
-        calculating = true
-        routeResult = null
-        expandedJourneyIndex = -1
-
-        scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                routeEngine.findJourneys(
-                    originStopId = origin.stopId,
-                    destinationStopId = destination.stopId,
-                    departureTime = departureTime,
-                    maxTransfers = settings.maxTransfers,
-                    minimumTransferMinutes = settings.minTransferMinutes.toLong(),
-                    allowWalkingTransfers = settings.allowWalkingTransfers,
-                    maxResults = 5
-                )
-            }
-            routeResult = result
-            calculating = false
         }
     }
 
@@ -326,18 +351,21 @@ fun RoutePlannerScreen(
                     shadowElevation = 6.dp
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
                             text = if (pickingOnMapForField == "origin") "בחר תחנת מוצא על המפה" else "בחר תחנת יעד על המפה",
                             fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp
+                            fontSize = 13.sp,
+                            modifier = Modifier.weight(1f, fill = false)
                         )
-                        OutlinedButton(
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Button(
                             onClick = { pickingOnMapForField = null },
-                            shape = RoundedCornerShape(20.dp)
+                            shape = RoundedCornerShape(16.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)
                         ) {
                             Text("ביטול", fontSize = 12.sp)
                         }
@@ -388,7 +416,6 @@ fun RoutePlannerScreen(
             FareCalculator.calculateFare(totalMeters, isTrain, journey.durationMinutes)
         }
 
-        // פונקציית ציור מסלול מלא ב-MapLibre (ציור קווי נסיעה, נקודות צבעוניות, והתאמת גבולות מצלמה)
         val renderJourneyOnMap: (org.maplibre.android.maps.MapLibreMap) -> Unit = { map ->
             map.getStyle { style ->
                 val validCoords = buildList {
@@ -408,7 +435,6 @@ fun RoutePlannerScreen(
                         map.easeCamera(CameraUpdateFactory.newLatLngZoom(validCoords.first(), 13.0))
                     }
 
-                    // ציור קו המסלול
                     val linePoints = validCoords.map { Point.fromLngLat(it.longitude, it.latitude) }
                     if (linePoints.size >= 2) {
                         val lineString = LineString.fromLngLats(linePoints)
@@ -429,7 +455,6 @@ fun RoutePlannerScreen(
                         )
                     }
 
-                    // ציור סמני התחנות: ירוק למוצא, כתום להחלפה, אדום ליעד
                     val stopFeatures = validCoords.mapIndexed { idx, coord ->
                         val color = when (idx) {
                             0 -> "#2E7D32"
@@ -546,7 +571,6 @@ fun RoutePlannerScreen(
                 }
             }
 
-            // שלבי הנסיעה עם אפשרות פתיחת תחנות ביניים והליכה
             journey.legs.forEachIndexed { legIdx, leg ->
                 var showIntermediateStops by remember { mutableStateOf(false) }
                 var intermediateStops by remember { mutableStateOf(emptyList<TransitRepository.RouteStop>()) }
@@ -566,7 +590,8 @@ fun RoutePlannerScreen(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(14.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    elevation = CardDefaults.cardElevation(1.dp)
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                    elevation = CardDefaults.cardElevation(2.dp)
                 ) {
                     Column(
                         modifier = Modifier.padding(14.dp),
@@ -636,7 +661,6 @@ fun RoutePlannerScreen(
                     }
                 }
 
-                // שלב מעבר בין נסיעות
                 if (legIdx < journey.legs.lastIndex) {
                     val nextLeg = journey.legs[legIdx + 1]
                     val waitMinutes = Duration.between(leg.arrivalAt, nextLeg.departureAt).toMinutes()
@@ -645,7 +669,7 @@ fun RoutePlannerScreen(
 
                     Surface(
                         shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.10f),
+                        color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.12f),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -676,7 +700,6 @@ fun RoutePlannerScreen(
                 }
             }
 
-            // הליכה מסכמת ליעד
             journey.finalWalk?.let { walk ->
                 Surface(
                     shape = RoundedCornerShape(10.dp),
@@ -690,7 +713,6 @@ fun RoutePlannerScreen(
                 }
             }
 
-            // מפה מוקטנת אינטראקטיבית עם ציור המסלול
             if (mapStorage.isMapAvailable()) {
                 Card(
                     modifier = Modifier
@@ -740,10 +762,11 @@ fun RoutePlannerScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scrollState)
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // כותרת עליונה + כפתור חזרה למסך הבית
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -752,204 +775,302 @@ fun RoutePlannerScreen(
             Text(
                 "תכנון מסלול",
                 style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
             )
-            OutlinedButton(onClick = onBack, shape = RoundedCornerShape(20.dp)) {
-                Text("חזרה")
-            }
-        }
-
-        // מוצא
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("מוצא", fontWeight = FontWeight.Bold)
             OutlinedButton(
-                onClick = {
-                    val fine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-                    val coarse = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-                    if (fine || coarse) findAndSetNearestStopFromGPS()
-                    else locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
-                },
-                enabled = !detectingLocation,
+                onClick = onBack,
                 shape = RoundedCornerShape(20.dp)
             ) {
-                Text(if (detectingLocation) "מאתר..." else "📍 המיקום שלי", fontSize = 11.sp)
+                Text("חזרה למסך הבית")
             }
         }
 
-        Row(
+        // כרטיס שדות החיפוש המאוחד
+        Card(
             modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+            elevation = CardDefaults.cardElevation(2.dp)
         ) {
-            OutlinedTextField(
-                value = originQuery,
-                onValueChange = {
-                    originQuery = it
-                    selectedOrigin = null
-                    activeField = "origin"
-                    routeResult = null
-                },
-                modifier = Modifier
-                    .weight(1f)
-                    .focusRequester(originFocusRequester),
-                label = { Text("תחנת מוצא (שם או מספר מהשלט)") },
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp),
-                trailingIcon = {
-                    if (originQuery.isNotEmpty()) {
-                        IconButton(onClick = { originQuery = ""; selectedOrigin = null }) { Text("✕") }
-                    }
-                },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                keyboardActions = KeyboardActions(onNext = { destFocusRequester.requestFocus() })
-            )
-
-            OutlinedButton(
-                onClick = { pickingOnMapForField = "origin" },
-                shape = RoundedCornerShape(12.dp),
-                contentPadding = PaddingValues(horizontal = 8.dp)
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text("🗺️", fontSize = 16.sp)
-            }
-        }
+                // כותרת מוצא + GPS
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("מוצא", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    FilledTonalButton(
+                        onClick = {
+                            val fine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                            val coarse = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                            if (fine || coarse) findAndSetNearestStopFromGPS()
+                            else locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+                        },
+                        enabled = !detectingLocation,
+                        shape = RoundedCornerShape(20.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)
+                    ) {
+                        Text(if (detectingLocation) "מאתר..." else "📍 המיקום שלי", fontSize = 11.sp)
+                    }
+                }
 
-        if (activeField == "origin") {
-            originResults.take(6).forEach { group ->
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            selectedOrigin = group.stop1
-                            originQuery = group.baseName
-                            originResults = emptyList()
-                            activeField = "destination"
+                // שדה מוצא
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    OutlinedTextField(
+                        value = originQuery,
+                        onValueChange = {
+                            originQuery = it
+                            selectedOrigin = null
+                            activeField = "origin"
+                            routeResult = null
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .focusRequester(originFocusRequester)
+                            .onFocusChanged { if (it.isFocused) activeField = "origin" },
+                        label = { Text("הקלד מוצא (שם/מספר תחנה או כתובת)", fontSize = 12.sp) },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        trailingIcon = {
+                            if (originQuery.isNotEmpty()) {
+                                IconButton(onClick = { originQuery = ""; selectedOrigin = null }) { Text("✕") }
+                            }
+                        },
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                        keyboardActions = KeyboardActions(onNext = {
                             destFocusRequester.requestFocus()
-                        },
-                    shape = RoundedCornerShape(10.dp)
-                ) {
-                    Column(modifier = Modifier.padding(10.dp)) {
-                        Text(group.baseName, fontWeight = FontWeight.Bold)
-                        if (group.stop2 != null) {
-                            Text("תחנה דו-כיוונית (האפליקציה תבחר את הרציף לכיוון הנסיעה)", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
-                        } else {
-                            Text("תחנה ${group.stop1.stopCode}", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+                            activeField = "destination"
+                            scope.launch { scrollState.animateScrollTo(260) }
+                        })
+                    )
+
+                    OutlinedButton(
+                        onClick = { pickingOnMapForField = "origin" },
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp)
+                    ) {
+                        Text("🗺️", fontSize = 16.sp)
+                    }
+                }
+
+                // תוצאות חיפוש מוצא
+                if (activeField == "origin" && originResults.isNotEmpty()) {
+                    originResults.take(6).forEach { group ->
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    selectedOrigin = group.stop1
+                                    originQuery = group.baseName
+                                    originResults = emptyList()
+                                    activeField = "destination"
+                                    destFocusRequester.requestFocus()
+                                    scope.launch { scrollState.animateScrollTo(260) }
+                                },
+                            shape = RoundedCornerShape(10.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                if (group.customName != null) {
+                                    Text("⭐ ${group.customName}", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, fontSize = 14.sp)
+                                    Text(group.baseName, fontSize = 12.sp)
+                                } else {
+                                    Text(group.baseName, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                }
+                                Spacer(modifier = Modifier.height(2.dp))
+                                if (group.stop2 != null) {
+                                    Text("תחנה דו-כיוונית (מק\"ט ${group.stop1.stopCode} / ${group.stop2.stopCode})", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                                } else {
+                                    Text("תחנה ${group.stop1.stopCode}", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+                                }
+                            }
                         }
                     }
                 }
-            }
-        }
 
-        // יעד
-        Text("יעד", fontWeight = FontWeight.Bold)
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            OutlinedTextField(
-                value = destinationQuery,
-                onValueChange = {
-                    destinationQuery = it
-                    selectedDestination = null
-                    activeField = "destination"
-                    routeResult = null
-                },
-                modifier = Modifier
-                    .weight(1f)
-                    .focusRequester(destFocusRequester),
-                label = { Text("תחנת יעד (שם או מספר מהשלט)") },
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp),
-                trailingIcon = {
-                    if (destinationQuery.isNotEmpty()) {
-                        IconButton(onClick = { destinationQuery = ""; selectedDestination = null }) { Text("✕") }
-                    }
-                },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = { searchRoute() })
-            )
-
-            OutlinedButton(
-                onClick = { pickingOnMapForField = "destination" },
-                shape = RoundedCornerShape(12.dp),
-                contentPadding = PaddingValues(horizontal = 8.dp)
-            ) {
-                Text("🗺️", fontSize = 16.sp)
-            }
-        }
-
-        if (activeField == "destination") {
-            destinationResults.take(6).forEach { group ->
-                Card(
+                // כפתור החלפת מוצא ויעד מעוצב וקומפקטי בין שני השדות
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable {
-                            selectedDestination = group.stop1
-                            destinationQuery = group.baseName
-                            destinationResults = emptyList()
-                            searchRoute()
-                        },
-                    shape = RoundedCornerShape(10.dp)
+                        .padding(vertical = 4.dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Column(modifier = Modifier.padding(10.dp)) {
-                        Text(group.baseName, fontWeight = FontWeight.Bold)
-                        if (group.stop2 != null) {
-                            Text("תחנה דו-כיוונית", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
-                        } else {
-                            Text("תחנה ${group.stop1.stopCode}", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+                    HorizontalDivider(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 40.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+                    FilledTonalButton(
+                        onClick = {
+                            val oldOrig = selectedOrigin
+                            val oldOrigQ = originQuery
+                            selectedOrigin = selectedDestination
+                            originQuery = destinationQuery
+                            selectedDestination = oldOrig
+                            destinationQuery = oldOrigQ
+
+                            originResults = emptyList()
+                            destinationResults = emptyList()
+                            routeResult = null
+
+                            if (selectedOrigin != null && selectedDestination != null && selectedOrigin?.stopId != selectedDestination?.stopId) {
+                                searchRoute()
+                            }
+                        },
+                        shape = RoundedCornerShape(20.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            contentColor = MaterialTheme.colorScheme.primary
+                        )
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("⇅", fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("החלפת מוצא ויעד", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        }
+                    }
+                }
+
+                // כותרת יעד
+                Text("יעד", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+
+                // שדה יעד
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    OutlinedTextField(
+                        value = destinationQuery,
+                        onValueChange = {
+                            destinationQuery = it
+                            selectedDestination = null
+                            activeField = "destination"
+                            routeResult = null
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .focusRequester(destFocusRequester)
+                            .onFocusChanged {
+                                if (it.isFocused) {
+                                    activeField = "destination"
+                                    scope.launch { scrollState.animateScrollTo(260) }
+                                }
+                            },
+                        label = { Text("הקלד יעד (שם/מספר תחנה או כתובת)", fontSize = 12.sp) },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        trailingIcon = {
+                            if (destinationQuery.isNotEmpty()) {
+                                IconButton(onClick = { destinationQuery = ""; selectedDestination = null }) { Text("✕") }
+                            }
+                        },
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = {
+                            keyboardController?.hide()
+                            if (selectedDestination == null && destinationResults.isNotEmpty()) {
+                                val first = destinationResults.first()
+                                selectedDestination = first.stop1
+                                destinationQuery = first.baseName
+                                destinationResults = emptyList()
+                            }
+                            searchRoute()
+                        })
+                    )
+
+                    OutlinedButton(
+                        onClick = { pickingOnMapForField = "destination" },
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp)
+                    ) {
+                        Text("🗺️", fontSize = 16.sp)
+                    }
+                }
+
+                // תוצאות חיפוש יעד
+                if (activeField == "destination" && destinationResults.isNotEmpty()) {
+                    destinationResults.take(6).forEach { group ->
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    selectedDestination = group.stop1
+                                    destinationQuery = group.baseName
+                                    destinationResults = emptyList()
+                                    keyboardController?.hide()
+                                    searchRoute()
+                                },
+                            shape = RoundedCornerShape(10.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                if (group.customName != null) {
+                                    Text("⭐ ${group.customName}", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, fontSize = 14.sp)
+                                    Text(group.baseName, fontSize = 12.sp)
+                                } else {
+                                    Text(group.baseName, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                }
+                                Spacer(modifier = Modifier.height(2.dp))
+                                if (group.stop2 != null) {
+                                    Text("תחנה דו-כיוונית (מק\"ט ${group.stop1.stopCode} / ${group.stop2.stopCode})", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                                } else {
+                                    Text("תחנה ${group.stop1.stopCode}", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+                                }
+                            }
                         }
                     }
                 }
             }
         }
 
-        // החלפת מוצא ויעד
-        OutlinedButton(
-            onClick = {
-                val oldOrig = selectedOrigin
-                selectedOrigin = selectedDestination
-                selectedDestination = oldOrig
-
-                originQuery = selectedOrigin?.name.orEmpty()
-                destinationQuery = selectedDestination?.name.orEmpty()
-
-                originResults = emptyList()
-                destinationResults = emptyList()
-                routeResult = null
-            },
-            shape = RoundedCornerShape(20.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("⇅ החלפת מוצא ויעד")
-        }
-
+        // תחנות שמורות אישיות
         if (savedStops.isNotEmpty()) {
-            Text("התחנות שלי", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            Text("התחנות שלי לבחירה מהירה:", fontWeight = FontWeight.Bold, fontSize = 13.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                savedStops.take(3).forEach { saved ->
+                savedStops.take(4).forEach { saved ->
                     Surface(
                         shape = RoundedCornerShape(16.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
                         modifier = Modifier
                             .clickable {
-                                val s = TransitRepository.TransitStop(saved.stopId, saved.stopName, null, null, saved.stopCode)
+                                val s = TransitRepository.TransitStop(saved.stopId, saved.stopName, null, null, saved.stopCode, saved.customName)
                                 if (activeField == "origin") {
                                     selectedOrigin = s
                                     originQuery = s.name
+                                    originResults = emptyList()
                                     destFocusRequester.requestFocus()
+                                    activeField = "destination"
+                                    scope.launch { scrollState.animateScrollTo(260) }
                                 } else {
                                     selectedDestination = s
                                     destinationQuery = s.name
+                                    destinationResults = emptyList()
+                                    keyboardController?.hide()
+                                    searchRoute()
                                 }
                             }
                             .padding(2.dp)
                     ) {
-                        Text(saved.customName, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp), fontSize = 12.sp)
+                        Text(
+                            "⭐ ${saved.customName}",
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
                     }
                 }
             }
@@ -965,7 +1086,10 @@ fun RoutePlannerScreen(
         )
 
         Button(
-            onClick = { searchRoute() },
+            onClick = {
+                keyboardController?.hide()
+                searchRoute()
+            },
             modifier = Modifier.fillMaxWidth(),
             enabled = selectedOrigin != null && selectedDestination != null && selectedOrigin?.stopId != selectedDestination?.stopId && !calculating,
             shape = RoundedCornerShape(20.dp)
@@ -979,24 +1103,23 @@ fun RoutePlannerScreen(
             }
         }
 
-        // תוצאות חיפוש באקורדיון
+        // תוצאות חיפוש
         routeResult?.let { res ->
             if (res.error != null) {
-                Card {
-                    Text(res.error, modifier = Modifier.padding(14.dp), color = MaterialTheme.colorScheme.error)
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+                    Text(res.error, modifier = Modifier.padding(14.dp), color = MaterialTheme.colorScheme.onErrorContainer)
                 }
             } else if (res.journeys.isEmpty()) {
                 Card {
                     Text("לא נמצאו מסלולים מתאימים במועד המבוקש.", modifier = Modifier.padding(14.dp))
                 }
             } else {
-                Text("תוצאות חיפוש", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Text("תוצאות חיפוש", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = MaterialTheme.colorScheme.primary)
 
                 res.journeys.forEachIndexed { idx, journey ->
                     val isExpanded = expandedJourneyIndex == idx
                     val diffMin = Duration.between(LocalDateTime.now(), journey.departureAt).toMinutes().coerceAtLeast(0)
 
-                    // שליפת שעות יציאה עתידיות אמיתיות לקו הראשון במסלול
                     var nextDeparturesReal by remember { mutableStateOf<List<String>>(emptyList()) }
                     val firstLeg = journey.legs.firstOrNull()
 
@@ -1016,10 +1139,10 @@ fun RoutePlannerScreen(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(14.dp),
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                        elevation = CardDefaults.cardElevation(1.dp)
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                        elevation = CardDefaults.cardElevation(2.dp)
                     ) {
                         Column(modifier = Modifier.padding(14.dp)) {
-                            // שורה מכווצת לריפרוף מהיר
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -1065,7 +1188,6 @@ fun RoutePlannerScreen(
                                 }
                             }
 
-                            // שורה מורחבת בלחיצה
                             AnimatedVisibility(visible = isExpanded) {
                                 Column(
                                     modifier = Modifier.padding(top = 12.dp),

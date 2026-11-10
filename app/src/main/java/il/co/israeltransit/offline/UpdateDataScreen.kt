@@ -2,6 +2,7 @@ package il.co.israeltransit.offline
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -85,18 +86,33 @@ fun UpdateDataScreen(onBack: () -> Unit) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("ייבוא ועדכון נתונים", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            OutlinedButton(onClick = onBack, shape = RoundedCornerShape(20.dp)) { Text("חזרה") }
+            Text(
+                text = "ייבוא ועדכון נתונים",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+            OutlinedButton(
+                onClick = onBack,
+                shape = RoundedCornerShape(20.dp)
+            ) {
+                Text("חזרה למסך הבית")
+            }
         }
 
-        Text("מרכז ניהול קובצי הנתונים והמפה של האפליקציה לפעילות מלאה ללא אינטרנט.", style = MaterialTheme.typography.bodySmall)
+        Text(
+            text = "מרכז ניהול קובצי הנתונים והמפה של האפליקציה לפעילות מלאה ללא אינטרנט.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
 
         // כרטיס מאגר תחבורה GTFS
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(14.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(1.dp)
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+            elevation = CardDefaults.cardElevation(2.dp)
         ) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("מאגר נתוני תחבורה (GTFS)", fontWeight = FontWeight.Bold)
@@ -122,7 +138,8 @@ fun UpdateDataScreen(onBack: () -> Unit) {
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(14.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(1.dp)
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+            elevation = CardDefaults.cardElevation(2.dp)
         ) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("קובץ מפה לא מקוונת (PMTiles)", fontWeight = FontWeight.Bold)
@@ -147,7 +164,8 @@ fun UpdateDataScreen(onBack: () -> Unit) {
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(14.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(1.dp)
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+            elevation = CardDefaults.cardElevation(2.dp)
         ) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("מיקום אחסון הקבצים", fontWeight = FontWeight.Bold)
@@ -162,7 +180,17 @@ fun UpdateDataScreen(onBack: () -> Unit) {
                                 if (!busy && selectedLocationId != loc.id) {
                                     scope.launch {
                                         busy = true
-                                        withContext(Dispatchers.IO) { migration.moveTo(loc.id) }
+                                        if (databaseAvailable || mapAvailable) {
+                                            val result = withContext(Dispatchers.IO) { migration.moveTo(loc.id) }
+                                            statusMessage = result.message
+                                        } else {
+                                            val success = storage.selectLocation(loc.id)
+                                            statusMessage = if (success) {
+                                                "מיקום האחסון הוגדר ל: ${loc.label}. הקבצים שייובאו יישמרו כאן."
+                                            } else {
+                                                "לא ניתן היה להגדיר את מיקום האחסון שנבחר."
+                                            }
+                                        }
                                         busy = false
                                         refreshVersion++
                                     }
@@ -175,18 +203,59 @@ fun UpdateDataScreen(onBack: () -> Unit) {
             }
         }
 
-        if (busy) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                CircularProgressIndicator()
-            }
-        }
-
-        Surface(
-            shape = RoundedCornerShape(10.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-            modifier = Modifier.fillMaxWidth()
+        // צג התקדמות ייבוא, העברה ועדכון
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (busy) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            ),
+            border = BorderStroke(
+                1.dp,
+                if (busy) MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+                else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+            )
         ) {
-            Text(statusMessage, modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (busy) "⏳ מתבצע ייבוא / עדכון..." else "מצב המערכת:",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        color = if (busy) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                    )
+                    if (busy) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                    }
+                }
+
+                if (busy) {
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(6.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+                    )
+                }
+
+                Text(
+                    text = statusMessage,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }

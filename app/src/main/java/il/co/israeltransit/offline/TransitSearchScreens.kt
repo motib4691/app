@@ -743,6 +743,7 @@ fun LineSearchScreen(
     val variantRepository = remember(database) { RouteVariantRepository(database) }
     val scheduleRepo = remember(database) { TransitScheduleRepository(database) }
     val mapStorage = remember(context) { OfflineMapStorage(context) }
+    val scope = rememberCoroutineScope()
 
     var query by remember { mutableStateOf(initialLine ?: "") }
     var cityFilter by remember { mutableStateOf("") }

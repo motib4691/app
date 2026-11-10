@@ -5,8 +5,10 @@ import android.app.TimePickerDialog
 import android.content.Context
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
@@ -33,11 +35,24 @@ import il.co.israeltransit.offline.maps.OfflineMapStorage
 import il.co.israeltransit.offline.maps.OfflineMapView
 import il.co.israeltransit.offline.schedule.TransitScheduleRepository
 import il.co.israeltransit.offline.ui.OperatorTheme
+import il.co.israeltransit.offline.ui.RouteFromButton
+import il.co.israeltransit.offline.ui.RouteToButton
 import il.co.israeltransit.offline.ui.TransitLineBadge
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
+import org.maplibre.android.camera.CameraUpdateFactory
+import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.geometry.LatLngBounds
+import org.maplibre.android.style.layers.CircleLayer
+import org.maplibre.android.style.layers.LineLayer
+import org.maplibre.android.style.layers.PropertyFactory.*
+import org.maplibre.android.style.sources.GeoJsonSource
+import org.maplibre.geojson.Feature
+import org.maplibre.geojson.FeatureCollection
+import org.maplibre.geojson.LineString
+import org.maplibre.geojson.Point
 import java.io.File
 import java.time.Duration
 import java.time.LocalDate
@@ -174,7 +189,6 @@ private class RouteVariantRepository(
     }
 }
 
-// שליפת שעות מעבר מדויקות של נסיעה ספציפית לפי תחנות
 private fun getTripStopTimes(database: TransitDatabase, tripId: String): Map<String, String> {
     val db = database.openReadOnly() ?: return emptyMap()
     val result = mutableMapOf<String, String>()
@@ -197,9 +211,32 @@ private fun getTripStopTimes(database: TransitDatabase, tripId: String): Map<Str
     return result
 }
 
+private fun loadSearchSavedRefs(context: Context): List<TransitRepository.SavedStopRef> {
+    return try {
+        val json = context.getSharedPreferences("saved_transit_stops", Context.MODE_PRIVATE)
+            .getString("stops", "[]") ?: "[]"
+        val array = JSONArray(json)
+        buildList {
+            for (i in 0 until array.length()) {
+                val item = array.getJSONObject(i)
+                val sId = item.optString("stopId")
+                val sCode = item.optString("stopCode").ifBlank { sId }
+                add(TransitRepository.SavedStopRef(sId, item.optString("customName"), sCode))
+            }
+        }
+    } catch (_: Exception) {
+        emptyList()
+    }
+}
+
+// =========================================================================
+// 1. מסך חיפוש תחנה (StopSearchScreen)
+// =========================================================================
+
 @OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 fun StopSearchScreen(
+    initialStop: TransitRepository.TransitStop? = null,
     onBack: () -> Unit,
     onNavigateToLine: (String) -> Unit,
     onPlanRouteFrom: ((TransitRepository.TransitStop) -> Unit)? = null,
@@ -210,10 +247,11 @@ fun StopSearchScreen(
     val repository = remember(database) { TransitRepository(database) }
     val scheduleRepo = remember(database) { TransitScheduleRepository(database) }
     val mapStorage = remember(context) { OfflineMapStorage(context) }
+    val savedRefs = remember(context) { loadSearchSavedRefs(context) }
 
     var query by remember { mutableStateOf("") }
     var groupedResults by remember { mutableStateOf(emptyList<TransitRepository.DualStopGroup>()) }
-    var selectedStop by remember { mutableStateOf<TransitRepository.TransitStop?>(null) }
+    var selectedStop by remember { mutableStateOf(initialStop) }
     var oppositeStop by remember { mutableStateOf<TransitRepository.TransitStop?>(null) }
 
     var departures by remember { mutableStateOf(emptyList<TransitScheduleRepository.Departure>()) }
@@ -224,8 +262,7 @@ fun StopSearchScreen(
     var selectedDate by remember { mutableStateOf(LocalDate.now()) }
     var selectedTime by remember { mutableStateOf(LocalTime.now()) }
 
-    var viewingMapForStop by remember { mutableStateOf<TransitRepository.TransitStop?>(null) }
-    var showMapNotInstalledDialog by remember { mutableStateOf(false) }
+    var isMapFullScreen by remember { mutableStateOf(false) }
 
     var searchHistory by remember { mutableStateOf(SearchHistoryHelper.getHistory(context, "stop_history")) }
     var historyItemToDelete by remember { mutableStateOf<String?>(null) }
@@ -233,8 +270,24 @@ fun StopSearchScreen(
     val focusRequester = remember { FocusRequester() }
 
     LaunchedEffect(Unit) {
-        delay(250)
-        focusRequester.requestFocus()
+        if (selectedStop == null) {
+            delay(250)
+            focusRequester.requestFocus()
+        }
+    }
+
+    LaunchedEffect(initialStop) {
+        if (initialStop != null) {
+            selectedStop = initialStop
+        }
+    }
+
+    BackHandler(enabled = selectedStop != null || isMapFullScreen) {
+        if (isMapFullScreen) {
+            isMapFullScreen = false
+        } else {
+            selectedStop = null
+        }
     }
 
     LaunchedEffect(query) {
@@ -243,7 +296,9 @@ fun StopSearchScreen(
             groupedResults = emptyList()
         } else {
             delay(200)
-            groupedResults = withContext(Dispatchers.IO) { repository.searchGroupedStops(q, 40) }
+            groupedResults = withContext(Dispatchers.IO) {
+                repository.searchGroupedStops(q, 40, savedRefs)
+            }
         }
     }
 
@@ -277,51 +332,23 @@ fun StopSearchScreen(
         )
     }
 
-    if (showMapNotInstalledDialog) {
-        AlertDialog(
-            onDismissRequest = { showMapNotInstalledDialog = false },
-            title = { Text("מפה לא מותקנת") },
-            text = { Text("קובץ המפה הלא-מקוונת לא הותקן עדיין במכשיר.\nתוכל לייבא אותו במסך 'עדכון נתונים'.") },
-            confirmButton = {
-                TextButton(onClick = { showMapNotInstalledDialog = false }) { Text("הבנתי") }
-            }
-        )
-    }
-
-    if (viewingMapForStop != null) {
-        val stop = viewingMapForStop!!
-        val lat = stop.latitude ?: 31.7683
-        val lon = stop.longitude ?: 35.2137
-        val mapFile: File = mapStorage.getMapFile()
-
-        Column(modifier = Modifier.fillMaxSize()) {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                color = MaterialTheme.colorScheme.surface,
-                shadowElevation = 4.dp
+    // תצוגת מפה מלאה
+    if (isMapFullScreen && selectedStop != null && mapStorage.isMapAvailable()) {
+        val stop = selectedStop!!
+        Box(modifier = Modifier.fillMaxSize()) {
+            OfflineMapView(
+                pmtilesFile = mapStorage.getMapFile(),
+                modifier = Modifier.fillMaxSize(),
+                initialLatitude = stop.latitude ?: 31.7683,
+                initialLongitude = stop.longitude ?: 35.2137,
+                initialZoom = 15.5
+            )
+            FilledTonalButton(
+                onClick = { isMapFullScreen = false },
+                modifier = Modifier.align(Alignment.TopEnd).padding(16.dp),
+                shape = RoundedCornerShape(20.dp)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(14.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(stop.name, fontWeight = FontWeight.Bold, fontSize = 17.sp)
-                        Text("תחנה ${stop.stopCode}", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium)
-                    }
-                    OutlinedButton(onClick = { viewingMapForStop = null }, shape = RoundedCornerShape(20.dp)) {
-                        Text("חזרה לפרטים")
-                    }
-                }
-            }
-            Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                OfflineMapView(
-                    pmtilesFile = mapFile,
-                    modifier = Modifier.fillMaxSize(),
-                    initialLatitude = lat,
-                    initialLongitude = lon,
-                    initialZoom = 16.0
-                )
+                Text("יציאה ממסך מלא")
             }
         }
         return
@@ -332,8 +359,9 @@ fun StopSearchScreen(
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        // שורה עליונה
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -342,15 +370,14 @@ fun StopSearchScreen(
             Text(
                 if (selectedStop == null) "חיפוש תחנה" else "פרטי תחנה",
                 style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
             )
             OutlinedButton(
-                onClick = {
-                    if (selectedStop != null) selectedStop = null else onBack()
-                },
+                onClick = onBack,
                 shape = RoundedCornerShape(20.dp)
             ) {
-                Text(if (selectedStop != null) "חזרה לתוצאות" else "חזרה")
+                Text("חזרה למסך הבית")
             }
         }
 
@@ -394,9 +421,11 @@ fun StopSearchScreen(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(14.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    elevation = CardDefaults.cardElevation(1.dp)
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                    elevation = CardDefaults.cardElevation(2.dp)
                 ) {
                     Column {
+                        // כיוון ראשון
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -408,10 +437,20 @@ fun StopSearchScreen(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(group.stop1.name, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                            Text("תחנה ${group.stop1.stopCode}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Column(modifier = Modifier.weight(1f)) {
+                                if (group.customName != null) {
+                                    Text("⭐ ${group.customName}", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.primary)
+                                    Text(group.baseName, fontSize = 12.sp)
+                                } else {
+                                    Text(group.baseName, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                }
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text("מספר תחנה (מק\"ט): ${group.stop1.stopCode}", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp)
+                            }
+                            Text("←", fontSize = 16.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                         }
 
+                        // כיוון נגדי (אם קיים)
                         if (group.stop2 != null) {
                             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                             Row(
@@ -425,8 +464,12 @@ fun StopSearchScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("${group.stop2.name} (לכיוון השני)", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                                Text("תחנה ${group.stop2.stopCode}", color = MaterialTheme.colorScheme.secondary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("${group.stop2.name} (לכיוון השני)", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text("מספר תחנה (מק\"ט): ${group.stop2.stopCode}", color = MaterialTheme.colorScheme.secondary, fontSize = 12.sp)
+                                }
+                                Text("←", fontSize = 16.sp, color = MaterialTheme.colorScheme.secondary, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -434,69 +477,77 @@ fun StopSearchScreen(
             }
         } else {
             val stop = selectedStop!!
-            Text(stop.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Text("מספר תחנה (מק\"ט): ${stop.stopCode}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
 
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                onPlanRouteFrom?.let {
-                    FilledTonalButton(onClick = { it(stop) }, shape = RoundedCornerShape(20.dp), modifier = Modifier.weight(1f)) {
-                        Text("מסלול מכאן", fontSize = 12.sp)
-                    }
-                }
-                onPlanRouteTo?.let {
-                    FilledTonalButton(onClick = { it(stop) }, shape = RoundedCornerShape(20.dp), modifier = Modifier.weight(1f)) {
-                        Text("מסלול לכאן", fontSize = 12.sp)
-                    }
-                }
-                OutlinedButton(
-                    onClick = {
-                        if (mapStorage.isMapAvailable()) viewingMapForStop = stop else showMapNotInstalledDialog = true
-                    },
-                    shape = RoundedCornerShape(20.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text("במפה", fontSize = 12.sp)
-                }
-            }
+            // כרטיס פרטי התחנה הראשית
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                elevation = CardDefaults.cardElevation(2.dp)
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stop.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text("מספר תחנה (מק\"ט): ${stop.stopCode}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, fontSize = 14.sp)
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                    onClick = {
-                        val prefs = context.getSharedPreferences("saved_transit_stops", Context.MODE_PRIVATE)
-                        val array = try { JSONArray(prefs.getString("stops", "[]")) } catch (_: Exception) { JSONArray() }
-                        val obj = org.json.JSONObject().apply {
-                            put("stopId", stop.stopId)
-                            put("stopName", stop.name)
-                            put("customName", stop.name)
-                            put("stopCode", stop.stopCode)
+                    // שורת כפתורים 1: מסלול מכאן / לכאן עם אייקונים אחידים
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        onPlanRouteFrom?.let {
+                            RouteFromButton(
+                                onClick = { it(stop) },
+                                modifier = Modifier.weight(1f)
+                            )
                         }
-                        array.put(obj)
-                        prefs.edit().putString("stops", array.toString()).apply()
-                        android.widget.Toast.makeText(context, "התחנה נוספה לתחנות שלי!", android.widget.Toast.LENGTH_SHORT).show()
-                    },
-                    shape = RoundedCornerShape(20.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text("⭐ הוסף לתחנות שלי", fontSize = 12.sp)
-                }
+                        onPlanRouteTo?.let {
+                            RouteToButton(
+                                onClick = { it(stop) },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
 
-                if (oppositeStop != null) {
-                    OutlinedButton(
-                        onClick = { selectedStop = oppositeStop },
-                        shape = RoundedCornerShape(20.dp),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("תחנה נגדית ⟷", fontSize = 12.sp)
+                    // שורת כפתורים 2: הוספה לתחנות שלי + תחנה נגדית
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                val prefs = context.getSharedPreferences("saved_transit_stops", Context.MODE_PRIVATE)
+                                val array = try { JSONArray(prefs.getString("stops", "[]")) } catch (_: Exception) { JSONArray() }
+                                val obj = org.json.JSONObject().apply {
+                                    put("stopId", stop.stopId)
+                                    put("stopName", stop.name)
+                                    put("customName", stop.name)
+                                    put("stopCode", stop.stopCode)
+                                }
+                                array.put(obj)
+                                prefs.edit().putString("stops", array.toString()).apply()
+                                android.widget.Toast.makeText(context, "התחנה נוספה לתחנות שלי!", android.widget.Toast.LENGTH_SHORT).show()
+                            },
+                            shape = RoundedCornerShape(20.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("⭐ לתחנות שלי", fontSize = 12.sp)
+                        }
+
+                        if (oppositeStop != null) {
+                            OutlinedButton(
+                                onClick = { selectedStop = oppositeStop },
+                                shape = RoundedCornerShape(20.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("תחנה נגדית ⟷", fontSize = 12.sp)
+                            }
+                        }
                     }
                 }
             }
 
-            // חלונית 1: יציאות קרובות עם טיימר ירוק חי
+            // חלונית 1: יציאות קרובות (מוגבל עד 30 נסיעות, כפתור תאריך)
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(1.dp)
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                elevation = CardDefaults.cardElevation(2.dp)
             ) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("אוטובוסים קרובים בתחנה", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
@@ -516,7 +567,7 @@ fun StopSearchScreen(
                                     filterMode = "היום"
                                 }, selectedDate.year, selectedDate.monthValue - 1, selectedDate.dayOfMonth).show()
                             },
-                            label = { Text(if (filterMode == "היום") "${selectedDate.dayOfMonth}/${selectedDate.monthValue}" else "יום ▾") },
+                            label = { Text(if (filterMode == "היום") "${selectedDate.dayOfMonth}/${selectedDate.monthValue}" else "תאריך ▾") },
                             shape = RoundedCornerShape(20.dp)
                         )
                         FilterChip(
@@ -556,83 +607,115 @@ fun StopSearchScreen(
                             }
                         }
 
+                        // כפתור הגבלת 10/30 נסיעות
                         FilledTonalButton(
                             onClick = {
-                                departuresLimit += 20
-                                selectedStop = stop
+                                departuresLimit = if (departuresLimit == 10) 30 else 10
                             },
                             shape = RoundedCornerShape(20.dp),
                             modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
                         ) {
-                            Text("הצג 20 נסיעות נוספות")
+                            Text(if (departuresLimit == 10) "הצג 20 נסיעות נוספות" else "הסתר 20 נסיעות נוספות")
                         }
                     }
                 }
             }
 
-            // חלונית 2: כל הקווים בתחנה עם חישוב זמני אמת לכל קו
+            // חלונית 2: כל הקווים העוברים בתחנה (כרטיסייה נפרדת, שורות נפרדות למוצא ויעד)
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(1.dp)
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                elevation = CardDefaults.cardElevation(2.dp)
             ) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("קווים העוברים בתחנה זו", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+
                     if (lines.isEmpty()) {
                         Text("לא נמצאו קווים.", style = MaterialTheme.typography.bodySmall)
                     } else {
                         val nowTime = LocalDateTime.now()
                         lines.forEach { line ->
-                            // חישוב זמני האמת של 3 הנסיעות הקרובות של קו זה בתחנה זו
                             val lineDepartures = departures.filter { it.routeId == line.routeId || it.lineNumber == line.lineNumber }
                             val upcomingDiffs = lineDepartures.take(3).map {
                                 Duration.between(nowTime, it.departureAt).toMinutes().coerceAtLeast(0)
                             }
 
-                            Row(
+                            Card(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable { onNavigateToLine(line.lineNumber) }
-                                    .padding(vertical = 5.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                                    .padding(vertical = 3.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
                             ) {
                                 Row(
+                                    modifier = Modifier.padding(10.dp),
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    modifier = Modifier.weight(1f)
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    TransitLineBadge(lineNumber = line.lineNumber, agencyName = line.agencyName)
-                                    Column {
-                                        Text(line.name, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                        Text(line.agencyName, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    // מימין: מספר קו ומפעיל מתחתיו
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        TransitLineBadge(lineNumber = line.lineNumber, agencyName = line.agencyName)
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(line.agencyName, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
-                                }
 
-                                if (upcomingDiffs.isNotEmpty()) {
-                                    Text(
-                                        text = "בעוד " + upcomingDiffs.joinToString(" • ") + " דק'",
-                                        color = Color(0xFF2E7D32),
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                } else {
-                                    Column(horizontalAlignment = Alignment.End) {
-                                        Text(
-                                            text = "אין נסיעות היום",
-                                            color = MaterialTheme.colorScheme.error,
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                        Text(
-                                            text = "מחר - 06:30 • 07:00",
-                                            color = Color(0xFF2E7D32),
-                                            fontSize = 10.sp
-                                        )
+                                    // במרכז: מוצא ויעד בשתי שורות נפרדות + זמנים חיים
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("מוצא: ${line.originName.ifBlank { line.name }}", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                        if (line.destinationName.isNotBlank()) {
+                                            Text("יעד: ${line.destinationName}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
+                                        }
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        if (upcomingDiffs.isNotEmpty()) {
+                                            Text(
+                                                text = "בעוד " + upcomingDiffs.joinToString(" • ") + " דק'",
+                                                color = Color(0xFF2E7D32),
+                                                fontSize = 11.5.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        } else {
+                                            Text(
+                                                text = "אין נסיעות נוספות היום",
+                                                color = MaterialTheme.colorScheme.outline,
+                                                fontSize = 11.sp
+                                            )
+                                        }
                                     }
+
+                                    Text("←", fontSize = 14.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                                 }
                             }
+                        }
+                    }
+                }
+            }
+
+            // חלונית 3: מפה מוקטנת של התחנה בסוף המסך
+            if (mapStorage.isMapAvailable()) {
+                val lat = stop.latitude ?: 31.7683
+                val lon = stop.longitude ?: 35.2137
+                Card(
+                    modifier = Modifier.fillMaxWidth().height(220.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                ) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        OfflineMapView(
+                            pmtilesFile = mapStorage.getMapFile(),
+                            modifier = Modifier.fillMaxSize(),
+                            initialLatitude = lat,
+                            initialLongitude = lon,
+                            initialZoom = 15.5
+                        )
+                        FilledTonalButton(
+                            onClick = { isMapFullScreen = true },
+                            modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+                            shape = RoundedCornerShape(16.dp)
+                        ) {
+                            Text("מסך מלא", fontSize = 11.sp)
                         }
                     }
                 }
@@ -640,6 +723,10 @@ fun StopSearchScreen(
         }
     }
 }
+
+// =========================================================================
+// 2. מסך חיפוש קו (LineSearchScreen)
+// =========================================================================
 
 @OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
@@ -658,9 +745,12 @@ fun LineSearchScreen(
     val mapStorage = remember(context) { OfflineMapStorage(context) }
 
     var query by remember { mutableStateOf(initialLine ?: "") }
-    var lines by remember { mutableStateOf(emptyList<TransitRepository.TransitLine>()) }
+    var cityFilter by remember { mutableStateOf("") }
+    var agencyFilter by remember { mutableStateOf("") }
+    var showAgencyDropdown by remember { mutableStateOf(false) }
+
+    var groupedLines by remember { mutableStateOf(emptyList<TransitRepository.GroupedTransitLine>()) }
     var selectedLine by remember { mutableStateOf<TransitRepository.TransitLine?>(null) }
-    var expandedLineId by remember { mutableStateOf<String?>(null) }
 
     var variants by remember { mutableStateOf(emptyList<RouteVariant>()) }
     var selectedVariantIndex by remember { mutableIntStateOf(0) }
@@ -686,13 +776,32 @@ fun LineSearchScreen(
         }
     }
 
-    LaunchedEffect(query) {
+    BackHandler(enabled = selectedLine != null || isMapFullScreen) {
+        if (isMapFullScreen) {
+            isMapFullScreen = false
+        } else {
+            selectedLine = null
+        }
+    }
+
+    // חיפוש קווים מאוחד עם סינון עיר ומפעיל
+    LaunchedEffect(query, cityFilter, agencyFilter) {
         val q = query.trim()
-        if (q.isEmpty()) {
-            lines = emptyList()
+        val c = cityFilter.trim()
+        val a = agencyFilter.trim()
+
+        if (q.isEmpty() && c.isEmpty() && a.isEmpty()) {
+            groupedLines = emptyList()
         } else {
             delay(200)
-            lines = withContext(Dispatchers.IO) { repository.searchLines(q, 40) }
+            groupedLines = withContext(Dispatchers.IO) {
+                repository.searchGroupedLines(
+                    query = q,
+                    cityFilter = c,
+                    agencyFilter = a,
+                    limit = 50
+                )
+            }
         }
     }
 
@@ -703,14 +812,12 @@ fun LineSearchScreen(
             val deps = withContext(Dispatchers.IO) { scheduleRepo.getDailyDepartures(line.routeId, selectedDayType) }
             dailyDepartures = deps
 
-            // ברירת מחדל: איתור הנסיעה הקרובה ביותר מעכשיו
             val nowSec = LocalTime.now().toSecondOfDay()
             val nextDep = deps.firstOrNull { it.departureSeconds >= nowSec } ?: deps.firstOrNull()
             selectedTripIdForTimeline = nextDep?.tripId
         }
     }
 
-    // חישוב שעות הגעה מדויקות לכל התחנות לפי הנסיעה הנבחרת
     LaunchedEffect(selectedTripIdForTimeline) {
         val tId = selectedTripIdForTimeline
         if (tId != null) {
@@ -718,10 +825,6 @@ fun LineSearchScreen(
                 getTripStopTimes(database, tId)
             }
         }
-    }
-
-    BackHandler(enabled = isMapFullScreen) {
-        isMapFullScreen = false
     }
 
     historyItemToDelete?.let { item ->
@@ -742,40 +845,60 @@ fun LineSearchScreen(
         )
     }
 
+    // דיאלוג לחיצה על תחנה מתוך מסלול הקו
     clickedStopForAction?.let { stop ->
         val transitStop = TransitRepository.TransitStop(stop.stopId, stop.name, null, null, stop.stopCode)
         AlertDialog(
             onDismissRequest = { clickedStopForAction = null },
-            title = { Text(stop.name) },
-            text = { Text("תחנה ${stop.stopCode}\nבחר פעולה לתחנה זו:") },
-            confirmButton = {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            title = {
+                Text(
+                    text = stop.name,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("מספר תחנה (מק\"ט): ${stop.stopCode}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("בחר פעולה עבור תחנה זו:", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         onPlanRouteFrom?.let {
-                            FilledTonalButton(onClick = { clickedStopForAction = null; it(transitStop) }) { Text("מסלול מכאן", fontSize = 11.sp) }
+                            RouteFromButton(
+                                onClick = { clickedStopForAction = null; it(transitStop) },
+                                modifier = Modifier.weight(1f)
+                            )
                         }
                         onPlanRouteTo?.let {
-                            FilledTonalButton(onClick = { clickedStopForAction = null; it(transitStop) }) { Text("מסלול לכאן", fontSize = 11.sp) }
+                            RouteToButton(
+                                onClick = { clickedStopForAction = null; it(transitStop) },
+                                modifier = Modifier.weight(1f)
+                            )
                         }
                     }
+
                     Button(
                         onClick = {
                             clickedStopForAction = null
                             onNavigateToStop(transitStop)
                         },
                         shape = RoundedCornerShape(20.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
                     ) {
-                        Text("מעבר לתחנה זו", fontSize = 12.sp)
+                        Text("🚏 מעבר לפרטי תחנה זו", fontSize = 13.sp)
                     }
                 }
             },
+            confirmButton = {},
             dismissButton = {
                 TextButton(onClick = { clickedStopForAction = null }) { Text("סגירה") }
             }
         )
     }
 
+    // תצוגת מפה מלאה
     if (isMapFullScreen && mapStorage.isMapAvailable()) {
         Box(modifier = Modifier.fillMaxSize()) {
             OfflineMapView(pmtilesFile = mapStorage.getMapFile(), modifier = Modifier.fillMaxSize())
@@ -795,8 +918,9 @@ fun LineSearchScreen(
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        // שורה עליונה
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -805,17 +929,19 @@ fun LineSearchScreen(
             Text(
                 if (selectedLine == null) "חיפוש קו" else "קו ${selectedLine!!.lineNumber}",
                 style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
             )
             OutlinedButton(
-                onClick = { if (selectedLine != null) selectedLine = null else onBack() },
+                onClick = onBack,
                 shape = RoundedCornerShape(20.dp)
             ) {
-                Text(if (selectedLine != null) "חזרה לרשימה" else "חזרה")
+                Text("חזרה למסך הבית")
             }
         }
 
         if (selectedLine == null) {
+            // שדה חיפוש קו ראשי
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
@@ -830,6 +956,78 @@ fun LineSearchScreen(
                     }
                 }
             )
+
+            // שתי שדות מיקוד קומפקטיים (עיר ומפעיל) צמודים מתחת
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // שדה סינון עיר
+                OutlinedTextField(
+                    value = cityFilter,
+                    onValueChange = { cityFilter = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("סינון לפי עיר...", fontSize = 12.sp) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(10.dp),
+                    trailingIcon = {
+                        if (cityFilter.isNotEmpty()) {
+                            IconButton(onClick = { cityFilter = "" }) { Text("✕", fontSize = 10.sp) }
+                        }
+                    }
+                )
+
+                // שדה סינון מפעיל עם DropdownMenu
+                Box(modifier = Modifier.weight(1f)) {
+                    OutlinedButton(
+                        onClick = { showAgencyDropdown = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 14.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = agencyFilter.ifBlank { "מפעיל ▾" },
+                                fontSize = 12.sp,
+                                maxLines = 1
+                            )
+                            if (agencyFilter.isNotBlank()) {
+                                Text(
+                                    text = "✕",
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.clickable { agencyFilter = "" }
+                                )
+                            }
+                        }
+                    }
+
+                    DropdownMenu(
+                        expanded = showAgencyDropdown,
+                        onDismissRequest = { showAgencyDropdown = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("כל המפעילים", fontWeight = FontWeight.Bold) },
+                            onClick = {
+                                agencyFilter = ""
+                                showAgencyDropdown = false
+                            }
+                        )
+                        OperatorTheme.ALL_OPERATORS.forEach { op ->
+                            DropdownMenuItem(
+                                text = { Text(op, fontSize = 13.sp) },
+                                onClick = {
+                                    agencyFilter = op
+                                    showAgencyDropdown = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
 
             if (query.isBlank() && searchHistory.isNotEmpty()) {
                 Text("חיפושים אחרונים:", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
@@ -851,45 +1049,83 @@ fun LineSearchScreen(
                 }
             }
 
-            lines.forEach { line ->
-                val isExpanded = expandedLineId == line.routeId
-
+            // רשימת כרטיסיות הקווים המאוחדות (שני הכיוונים בכרטיסייה אחת)
+            groupedLines.forEach { group ->
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(14.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    elevation = CardDefaults.cardElevation(1.dp)
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)),
+                    elevation = CardDefaults.cardElevation(2.dp)
                 ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
+                    Column {
+                        // כותרת הכרטיסייה: מספר קו, מפעיל ועיר/ערים
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { expandedLineId = if (isExpanded) null else line.routeId },
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.06f))
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                TransitLineBadge(lineNumber = line.lineNumber, agencyName = line.agencyName)
-                                Column {
-                                    Text("${line.originName} ⟷ ${line.destinationName}", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                    Text(line.agencyName, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TransitLineBadge(lineNumber = group.lineNumber, agencyName = group.agencyName)
+                                Text(group.agencyName, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
-                            Text(if (isExpanded) "▲" else "▼")
+                            if (group.cityHeader.isNotBlank()) {
+                                Text(
+                                    text = group.cityHeader,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.5.sp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
                         }
 
-                        AnimatedVisibility(visible = isExpanded) {
-                            Column(modifier = Modifier.padding(top = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                FilledTonalButton(
-                                    onClick = {
-                                        SearchHistoryHelper.addHistory(context, "line_history", line.lineNumber)
-                                        selectedLine = line
-                                    },
-                                    shape = RoundedCornerShape(20.dp),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Text("כיוון: מ-${line.originName} ל-${line.destinationName}")
+                        // כיוון א'
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    SearchHistoryHelper.addHistory(context, "line_history", group.lineNumber)
+                                    selectedLine = group.forwardLine
                                 }
+                                .padding(12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "${group.forwardLine.originName} ➔ ${group.forwardLine.destinationName}",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.5.sp
+                                )
+                            }
+                            Text("←", fontSize = 16.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                        }
+
+                        // כיוון ב' (אם קיים)
+                        if (group.backwardLine != null) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        SearchHistoryHelper.addHistory(context, "line_history", group.lineNumber)
+                                        selectedLine = group.backwardLine
+                                    }
+                                    .padding(12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "${group.backwardLine.originName} ➔ ${group.backwardLine.destinationName}",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.5.sp
+                                    )
+                                }
+                                Text("←", fontSize = 16.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -905,12 +1141,22 @@ fun LineSearchScreen(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(1.dp)
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                elevation = CardDefaults.cardElevation(2.dp)
             ) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TransitLineBadge(lineNumber = line.lineNumber, agencyName = line.agencyName)
-                        Text(line.agencyName, fontWeight = FontWeight.Medium, fontSize = 13.sp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TransitLineBadge(lineNumber = line.lineNumber, agencyName = line.agencyName)
+                            Text(line.agencyName, fontWeight = FontWeight.Medium, fontSize = 13.sp)
+                        }
+                        TextButton(onClick = { selectedLine = null }) {
+                            Text("חזרה לרשימת הקווים")
+                        }
                     }
                     Text("${line.originName} ➔ ${line.destinationName}", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     Text("סה\"כ ${currentStops.size} תחנות במסלול הקו", fontSize = 12.sp, color = MaterialTheme.colorScheme.outline)
@@ -922,16 +1168,22 @@ fun LineSearchScreen(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(1.dp)
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                elevation = CardDefaults.cardElevation(2.dp)
             ) {
-                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     val refStop = currentStops.getOrNull(selectedStopSequenceIndex)
                     val nextTimeForRef = refStop?.let { tripStopTimesMap[it.stopId] } ?: "08:10"
 
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("רשימת התחנות", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                        Text("הבא: $nextTimeForRef • בעוד 6 דק'", color = Color(0xFF2E7D32), fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                    }
+                    Text("רשימת התחנות", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.primary)
+                    // הכיתוב הירוק בשורה נפרדת מתחת לכותרת
+                    Text(
+                        text = "האוטובוס הבא בתחנה: $nextTimeForRef",
+                        color = Color(0xFF2E7D32),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.5.sp
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
 
                     currentStops.forEachIndexed { idx, st ->
                         val isSelected = selectedStopSequenceIndex == idx
@@ -948,9 +1200,7 @@ fun LineSearchScreen(
                                 modifier = Modifier
                                     .size(26.dp)
                                     .background(if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, CircleShape)
-                                    .clickable {
-                                        selectedStopSequenceIndex = idx
-                                    },
+                                    .clickable { selectedStopSequenceIndex = idx },
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
@@ -981,15 +1231,16 @@ fun LineSearchScreen(
                 }
             }
 
-            // לוח זמנים יומי בבועות
+            // לוח זמנים יומי בבועות צפופות
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(1.dp)
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                elevation = CardDefaults.cardElevation(2.dp)
             ) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("לוח זמנים יומי (לחיצה על שעה מעדכנת את הציר)", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    Text("לוח זמנים יומי", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         listOf(0 to "א'-ה' (היום)", 1 to "יום ו'", 2 to "מוצ\"ש").forEach { (type, label) ->
                             FilterChip(
@@ -1001,35 +1252,47 @@ fun LineSearchScreen(
                         }
                     }
 
+                    val nowSeconds = LocalTime.now().toSecondOfDay()
+
                     FlowRow(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         dailyDepartures.forEach { dep ->
                             val isSpecial = dep.isLastFridayTrip || dep.isFirstSaturdayTrip
                             val isCurrentTrip = dep.tripId == selectedTripIdForTimeline
+                            val isPastTrip = (selectedDayType == 0 && dep.departureSeconds < nowSeconds)
+
+                            val backgroundColor = when {
+                                isCurrentTrip -> MaterialTheme.colorScheme.primary
+                                isPastTrip -> Color.Transparent
+                                isSpecial -> Color(0xFFF57F17).copy(alpha = 0.20f)
+                                else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+                            }
+
+                            val borderModifier = if (isPastTrip && !isCurrentTrip) {
+                                Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(10.dp))
+                            } else Modifier
 
                             Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = when {
-                                    isCurrentTrip -> MaterialTheme.colorScheme.primary
-                                    isSpecial -> Color(0xFFF57F17).copy(alpha = 0.25f)
-                                    else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
-                                },
+                                shape = RoundedCornerShape(10.dp),
+                                color = backgroundColor,
                                 modifier = Modifier
-                                    .padding(2.dp)
-                                    .clickable {
+                                    .then(borderModifier)
+                                    .padding(1.dp)
+                                    .clickable(enabled = !isPastTrip) {
                                         selectedTripIdForTimeline = dep.tripId
                                     }
                             ) {
                                 Text(
                                     text = dep.departureAt.format(timeFormatter),
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.5.dp),
+                                    fontSize = 11.sp,
+                                    fontWeight = if (isCurrentTrip) FontWeight.Bold else FontWeight.Medium,
                                     color = when {
                                         isCurrentTrip -> Color.White
+                                        isPastTrip -> MaterialTheme.colorScheme.outline
                                         isSpecial -> Color(0xFFE65100)
                                         else -> MaterialTheme.colorScheme.onSurface
                                     }
@@ -1040,14 +1303,70 @@ fun LineSearchScreen(
                 }
             }
 
-            // מפה מוקטנת אינטראקטיבית
+            // מפה מוקטנת אינטראקטיבית עם ציור קו המסלול
             if (mapStorage.isMapAvailable()) {
+                val renderLineOnMap: (org.maplibre.android.maps.MapLibreMap) -> Unit = { map ->
+                    map.getStyle { style ->
+                        scope.launch {
+                            val stopCoordinates = withContext(Dispatchers.IO) {
+                                val db = database.openReadOnly() ?: return@withContext emptyList()
+                                try {
+                                    val coords = mutableListOf<LatLng>()
+                                    for (st in currentStops) {
+                                        db.rawQuery("SELECT stop_lat, stop_lon FROM stops WHERE stop_id = ? LIMIT 1", arrayOf(st.stopId)).use { c ->
+                                            if (c.moveToFirst() && !c.isNull(0) && !c.isNull(1)) {
+                                                coords.add(LatLng(c.getDouble(0), c.getDouble(1)))
+                                            }
+                                        }
+                                    }
+                                    coords
+                                } finally {
+                                    db.close()
+                                }
+                            }
+
+                            if (stopCoordinates.size >= 2) {
+                                val boundsBuilder = LatLngBounds.Builder()
+                                stopCoordinates.forEach { boundsBuilder.include(it) }
+                                try {
+                                    map.easeCamera(CameraUpdateFactory.newLatLngBounds(boundsBuilder.build(), 70), 800)
+                                } catch (_: Exception) {
+                                    map.easeCamera(CameraUpdateFactory.newLatLngZoom(stopCoordinates.first(), 13.0))
+                                }
+
+                                val points = stopCoordinates.map { Point.fromLngLat(it.longitude, it.latitude) }
+                                val lineString = LineString.fromLngLats(points)
+                                val lineSourceId = "line-path-source"
+                                val lineLayerId = "line-path-layer"
+
+                                if (style.getLayer(lineLayerId) != null) style.removeLayer(lineLayerId)
+                                if (style.getSource(lineSourceId) != null) style.removeSource(lineSourceId)
+
+                                style.addSource(GeoJsonSource(lineSourceId, Feature.fromGeometry(lineString)))
+                                style.addLayer(
+                                    LineLayer(lineLayerId, lineSourceId).withProperties(
+                                        lineColor("#1769AA"),
+                                        lineWidth(4.5f),
+                                        lineCap("round"),
+                                        lineJoin("round")
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+
                 Card(
                     modifier = Modifier.fillMaxWidth().height(200.dp),
-                    shape = RoundedCornerShape(14.dp)
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
                 ) {
                     Box(modifier = Modifier.fillMaxSize()) {
-                        OfflineMapView(pmtilesFile = mapStorage.getMapFile(), modifier = Modifier.fillMaxSize())
+                        OfflineMapView(
+                            pmtilesFile = mapStorage.getMapFile(),
+                            modifier = Modifier.fillMaxSize(),
+                            onMapReady = renderLineOnMap
+                        )
                         FilledTonalButton(
                             onClick = { isMapFullScreen = true },
                             modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),

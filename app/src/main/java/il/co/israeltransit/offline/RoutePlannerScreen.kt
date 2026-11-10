@@ -38,6 +38,7 @@ import il.co.israeltransit.offline.maps.TransitMyLocationControl
 import il.co.israeltransit.offline.routing.FareCalculator
 import il.co.israeltransit.offline.routing.FareResult
 import il.co.israeltransit.offline.routing.TransitRouteEngine
+import il.co.israeltransit.offline.schedule.TransitScheduleRepository
 import il.co.israeltransit.offline.ui.TransitLineBadge
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -112,6 +113,7 @@ fun RoutePlannerScreen(
     val database = remember(context) { TransitDatabase(context) }
     val repository = remember(database) { TransitRepository(database) }
     val routeEngine = remember(database) { TransitRouteEngine(database) }
+    val scheduleRepo = remember(database) { TransitScheduleRepository(database) }
     val mapStorage = remember(context) { OfflineMapStorage(context) }
     val settings = remember(context) { TransitSettings(context) }
     val locationControl = remember(context) { TransitMyLocationControl(context) }
@@ -172,7 +174,7 @@ fun RoutePlannerScreen(
                     routeResult = null
                     Toast.makeText(
                         context,
-                        "נבחרה התחנה הקרובה אליך: ${nearest.name} (תחנה ${nearest.stopCode})",
+                        "נבחרה התחנה הקרובה: ${nearest.name} (תחנה ${nearest.stopCode})",
                         Toast.LENGTH_SHORT
                     ).show()
                     destFocusRequester.requestFocus()
@@ -186,7 +188,7 @@ fun RoutePlannerScreen(
             }.onFailure {
                 Toast.makeText(
                     context,
-                    "לא ניתן לקבל מיקום כעת. אפשר לבחור תחנה ידנית.",
+                    "לא ניתן לקבל מיקום כעת. באפשרותך לבחור תחנה ידנית.",
                     Toast.LENGTH_SHORT
                 ).show()
             }
@@ -286,7 +288,7 @@ fun RoutePlannerScreen(
         }
     }
 
-    // הפעלת חיפוש אוטומטית ברגע ששני השדות נבחרו
+    // הפעלה אוטומטית ברגע ששני השדות נבחרו
     LaunchedEffect(selectedOrigin, selectedDestination) {
         if (selectedOrigin != null && selectedDestination != null && selectedOrigin?.stopId != selectedDestination?.stopId) {
             searchRoute()
@@ -303,7 +305,7 @@ fun RoutePlannerScreen(
         }
     }
 
-    // בחירת תחנה ישירות מהמפה
+    // בחירת תחנה על המפה
     if (pickingOnMapForField != null) {
         if (!mapStorage.isMapAvailable()) {
             pickingOnMapForField = null
@@ -386,6 +388,78 @@ fun RoutePlannerScreen(
             FareCalculator.calculateFare(totalMeters, isTrain, journey.durationMinutes)
         }
 
+        // פונקציית ציור מסלול מלא ב-MapLibre (ציור קווי נסיעה, נקודות צבעוניות, והתאמת גבולות מצלמה)
+        val renderJourneyOnMap: (org.maplibre.android.maps.MapLibreMap) -> Unit = { map ->
+            map.getStyle { style ->
+                val validCoords = buildList {
+                    journey.legs.forEach { leg ->
+                        if (leg.fromLat != null && leg.fromLon != null) add(LatLng(leg.fromLat, leg.fromLon))
+                        if (leg.toLat != null && leg.toLon != null) add(LatLng(leg.toLat, leg.toLon))
+                    }
+                }
+
+                if (validCoords.isNotEmpty()) {
+                    val boundsBuilder = LatLngBounds.Builder()
+                    validCoords.forEach { boundsBuilder.include(it) }
+
+                    try {
+                        map.easeCamera(CameraUpdateFactory.newLatLngBounds(boundsBuilder.build(), 100), 1000)
+                    } catch (_: Exception) {
+                        map.easeCamera(CameraUpdateFactory.newLatLngZoom(validCoords.first(), 13.0))
+                    }
+
+                    // ציור קו המסלול
+                    val linePoints = validCoords.map { Point.fromLngLat(it.longitude, it.latitude) }
+                    if (linePoints.size >= 2) {
+                        val lineString = LineString.fromLngLats(linePoints)
+                        val lineSourceId = "journey-path-source"
+                        val lineLayerId = "journey-path-layer"
+
+                        if (style.getLayer(lineLayerId) != null) style.removeLayer(lineLayerId)
+                        if (style.getSource(lineSourceId) != null) style.removeSource(lineSourceId)
+
+                        style.addSource(GeoJsonSource(lineSourceId, Feature.fromGeometry(lineString)))
+                        style.addLayer(
+                            LineLayer(lineLayerId, lineSourceId).withProperties(
+                                lineColor("#1769AA"),
+                                lineWidth(4.5f),
+                                lineCap("round"),
+                                lineJoin("round")
+                            )
+                        )
+                    }
+
+                    // ציור סמני התחנות: ירוק למוצא, כתום להחלפה, אדום ליעד
+                    val stopFeatures = validCoords.mapIndexed { idx, coord ->
+                        val color = when (idx) {
+                            0 -> "#2E7D32"
+                            validCoords.lastIndex -> "#C62828"
+                            else -> "#EF6C00"
+                        }
+                        val f = Feature.fromGeometry(Point.fromLngLat(coord.longitude, coord.latitude))
+                        f.addStringProperty("marker_color", color)
+                        f
+                    }
+
+                    val stopsSourceId = "journey-stops-source"
+                    val stopsLayerId = "journey-stops-layer"
+
+                    if (style.getLayer(stopsLayerId) != null) style.removeLayer(stopsLayerId)
+                    if (style.getSource(stopsSourceId) != null) style.removeSource(stopsSourceId)
+
+                    style.addSource(GeoJsonSource(stopsSourceId, FeatureCollection.fromFeatures(stopFeatures)))
+                    style.addLayer(
+                        CircleLayer(stopsLayerId, stopsSourceId).withProperties(
+                            circleColor(Expression.get("marker_color")),
+                            circleRadius(7.5f),
+                            circleStrokeColor("#FFFFFF"),
+                            circleStrokeWidth(2.5f)
+                        )
+                    )
+                }
+            }
+        }
+
         if (isMapFullScreen) {
             Box(modifier = Modifier.fillMaxSize()) {
                 OfflineMapView(
@@ -394,25 +468,7 @@ fun RoutePlannerScreen(
                     initialLatitude = initialLat,
                     initialLongitude = initialLon,
                     initialZoom = 13.0,
-                    onMapReady = { map ->
-                        map.getStyle { style ->
-                            val validCoords = buildList {
-                                journey.legs.forEach { leg ->
-                                    if (leg.fromLat != null && leg.fromLon != null) add(LatLng(leg.fromLat, leg.fromLon))
-                                    if (leg.toLat != null && leg.toLon != null) add(LatLng(leg.toLat, leg.toLon))
-                                }
-                            }
-                            if (validCoords.isNotEmpty()) {
-                                val boundsBuilder = LatLngBounds.Builder()
-                                validCoords.forEach { boundsBuilder.include(it) }
-                                try {
-                                    map.easeCamera(CameraUpdateFactory.newLatLngBounds(boundsBuilder.build(), 100), 1000)
-                                } catch (_: Exception) {
-                                    map.easeCamera(CameraUpdateFactory.newLatLngZoom(validCoords.first(), 13.0))
-                                }
-                            }
-                        }
-                    }
+                    onMapReady = renderJourneyOnMap
                 )
                 FilledTonalButton(
                     onClick = { isMapFullScreen = false },
@@ -620,7 +676,7 @@ fun RoutePlannerScreen(
                 }
             }
 
-            // הליכה מסכמת
+            // הליכה מסכמת ליעד
             journey.finalWalk?.let { walk ->
                 Surface(
                     shape = RoundedCornerShape(10.dp),
@@ -634,7 +690,7 @@ fun RoutePlannerScreen(
                 }
             }
 
-            // מפה מוקטנת אינטראקטיבית
+            // מפה מוקטנת אינטראקטיבית עם ציור המסלול
             if (mapStorage.isMapAvailable()) {
                 Card(
                     modifier = Modifier
@@ -648,7 +704,8 @@ fun RoutePlannerScreen(
                             modifier = Modifier.fillMaxSize(),
                             initialLatitude = initialLat,
                             initialLongitude = initialLon,
-                            initialZoom = 13.0
+                            initialZoom = 13.0,
+                            onMapReady = renderJourneyOnMap
                         )
                         FilledTonalButton(
                             onClick = { isMapFullScreen = true },
@@ -939,6 +996,22 @@ fun RoutePlannerScreen(
                     val isExpanded = expandedJourneyIndex == idx
                     val diffMin = Duration.between(LocalDateTime.now(), journey.departureAt).toMinutes().coerceAtLeast(0)
 
+                    // שליפת שעות יציאה עתידיות אמיתיות לקו הראשון במסלול
+                    var nextDeparturesReal by remember { mutableStateOf<List<String>>(emptyList()) }
+                    val firstLeg = journey.legs.firstOrNull()
+
+                    LaunchedEffect(journey) {
+                        if (firstLeg != null) {
+                            val upcoming = withContext(Dispatchers.IO) {
+                                scheduleRepo.upcomingDepartures(firstLeg.fromStopId, now = journey.departureAt.plusMinutes(1), limit = 8)
+                                    .filter { it.lineNumber == firstLeg.lineNumber }
+                                    .take(3)
+                                    .map { it.departureAt.format(plannerTimeFormatter) }
+                            }
+                            nextDeparturesReal = upcoming
+                        }
+                    }
+
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(14.dp),
@@ -1005,11 +1078,14 @@ fun RoutePlannerScreen(
                                             style = MaterialTheme.typography.bodySmall
                                         )
                                     }
-                                    Text(
-                                        "יציאות נוספות: ${journey.departureAt.plusMinutes(15).format(plannerTimeFormatter)} • ${journey.departureAt.plusMinutes(30).format(plannerTimeFormatter)}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
+
+                                    if (nextDeparturesReal.isNotEmpty()) {
+                                        Text(
+                                            "יציאות נוספות: " + nextDeparturesReal.joinToString(" • "),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
 
                                     Button(
                                         onClick = { detailedJourney = journey },

@@ -159,7 +159,7 @@ class TransitRouteEngine(
 
         db.rawQuery(
             """
-            SELECT stop_id, COALESCE(stop_name, ''), stop_lat, stop_lon
+            SELECT stop_id, COALESCE(stop_name, '') AS stop_name, stop_lat, stop_lon
             FROM stops
             WHERE stop_lat IS NOT NULL AND stop_lon IS NOT NULL
             """.trimIndent(),

@@ -13,6 +13,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -84,6 +85,7 @@ fun TransitApp() {
 
     val backStack = remember { mutableStateListOf<AppScreen>(AppScreen.Home) }
     val currentScreen = backStack.lastOrNull() ?: AppScreen.Home
+    val stateHolder = rememberSaveableStateHolder()
 
     fun navigateTo(screen: AppScreen) {
         backStack.add(screen)
@@ -165,111 +167,113 @@ fun TransitApp() {
                 modifier = Modifier.fillMaxSize(),
                 color = MaterialTheme.colorScheme.background
             ) {
-                when (val screen = currentScreen) {
-                    is AppScreen.Home -> HomeScreen(onNavigate = { navigateTo(it) })
+                stateHolder.SaveableStateProvider(screen::class.java.name) {
+                    when (val screen = currentScreen) {
+                        is AppScreen.Home -> HomeScreen(onNavigate = { navigateTo(it) })
 
-                    is AppScreen.StopSearch -> StopSearchScreen(
-                        initialStop = screen.initialStop,
-                        onBack = {
-                            if (screen.initialStop != null) {
-                                navigateBack()
-                            } else {
-                                navigateHome()
+                        is AppScreen.StopSearch -> StopSearchScreen(
+                            initialStop = screen.initialStop,
+                            onBack = {
+                                if (screen.initialStop != null) {
+                                    navigateBack()
+                                } else {
+                                    navigateHome()
+                                }
+                            },
+                            onNavigateToLine = { lineNumber ->
+                                navigateTo(AppScreen.LineSearch(lineNumber))
+                            },
+                            onPlanRouteFrom = { stop ->
+                                navigateTo(
+                                    AppScreen.RoutePlanner(
+                                        initialOrigin = stop,
+                                        initialDestination = null,
+                                        focusDestination = true
+                                    )
+                                )
+                            },
+                            onPlanRouteTo = { stop ->
+                                navigateTo(
+                                    AppScreen.RoutePlanner(
+                                        initialOrigin = null,
+                                        initialDestination = stop,
+                                        focusDestination = false
+                                    )
+                                )
                             }
-                        },
-                        onNavigateToLine = { lineNumber ->
-                            navigateTo(AppScreen.LineSearch(lineNumber))
-                        },
-                        onPlanRouteFrom = { stop ->
-                            navigateTo(
-                                AppScreen.RoutePlanner(
-                                    initialOrigin = stop,
-                                    initialDestination = null,
-                                    focusDestination = true
-                                )
-                            )
-                        },
-                        onPlanRouteTo = { stop ->
-                            navigateTo(
-                                AppScreen.RoutePlanner(
-                                    initialOrigin = null,
-                                    initialDestination = stop,
-                                    focusDestination = false
-                                )
-                            )
-                        }
-                    )
+                        )
 
-                    is AppScreen.LineSearch -> LineSearchScreen(
-                        initialLine = screen.initialLineNumber,
-                        onBack = { navigateHome() },
-                        onNavigateToStop = { stop ->
-                            navigateTo(AppScreen.StopSearch(initialStop = stop))
-                        },
-                        onPlanRouteFrom = { stop ->
-                            navigateTo(
-                                AppScreen.RoutePlanner(
-                                    initialOrigin = stop,
-                                    initialDestination = null,
-                                    focusDestination = true
+                        is AppScreen.LineSearch -> LineSearchScreen(
+                            initialLine = screen.initialLineNumber,
+                            onBack = { navigateHome() },
+                            onNavigateToStop = { stop ->
+                                navigateTo(AppScreen.StopSearch(initialStop = stop))
+                            },
+                            onPlanRouteFrom = { stop ->
+                                navigateTo(
+                                    AppScreen.RoutePlanner(
+                                        initialOrigin = stop,
+                                        initialDestination = null,
+                                        focusDestination = true
+                                    )
                                 )
-                            )
-                        },
-                        onPlanRouteTo = { stop ->
-                            navigateTo(
-                                AppScreen.RoutePlanner(
-                                    initialOrigin = null,
-                                    initialDestination = stop,
-                                    focusDestination = false
+                            },
+                            onPlanRouteTo = { stop ->
+                                navigateTo(
+                                    AppScreen.RoutePlanner(
+                                        initialOrigin = null,
+                                        initialDestination = stop,
+                                        focusDestination = false
+                                    )
                                 )
-                            )
-                        }
-                    )
+                            }
+                        )
 
-                    is AppScreen.RoutePlanner -> RoutePlannerScreen(
-                        onBack = { navigateHome() },
-                        initialOrigin = screen.initialOrigin,
-                        initialDestination = screen.initialDestination,
-                        focusDestinationInitially = screen.focusDestination
-                    )
+                        is AppScreen.RoutePlanner -> RoutePlannerScreen(
+                            onBack = { navigateHome() },
+                            initialOrigin = screen.initialOrigin,
+                            initialDestination = screen.initialDestination,
+                            focusDestinationInitially = screen.focusDestination
+                        )
 
-                    is AppScreen.SavedStops -> SavedStopsScreen(
-                        onBack = { navigateHome() },
-                        onPlanRouteFrom = { stop ->
-                            navigateTo(
-                                AppScreen.RoutePlanner(
-                                    initialOrigin = stop,
-                                    initialDestination = null,
-                                    focusDestination = true
+                        is AppScreen.SavedStops -> SavedStopsScreen(
+                            onBack = { navigateHome() },
+                            onPlanRouteFrom = { stop ->
+                                navigateTo(
+                                    AppScreen.RoutePlanner(
+                                        initialOrigin = stop,
+                                        initialDestination = null,
+                                        focusDestination = true
+                                    )
                                 )
-                            )
-                        },
-                        onPlanRouteTo = { stop ->
-                            navigateTo(
-                                AppScreen.RoutePlanner(
-                                    initialOrigin = null,
-                                    initialDestination = stop,
-                                    focusDestination = false
+                            },
+                            onPlanRouteTo = { stop ->
+                                navigateTo(
+                                    AppScreen.RoutePlanner(
+                                        initialOrigin = null,
+                                        initialDestination = stop,
+                                        focusDestination = false
+                                    )
                                 )
-                            )
-                        }
-                    )
+                            }
+                        )
 
-                    is AppScreen.OfflineMap -> OfflineMapScreen(
-                        onBack = { navigateHome() },
-                        onOpenStopDetails = { stop ->
-                            navigateTo(AppScreen.StopSearch(initialStop = stop))
-                        }
-                    )
+                        is AppScreen.OfflineMap -> OfflineMapScreen(
+                            onBack = { navigateHome() },
+                            onOpenStopDetails = { stop ->
+                                navigateTo(AppScreen.StopSearch(initialStop = stop))
+                            }
+                        )
 
-                    is AppScreen.UpdateData -> UpdateDataScreen(
-                        onBack = { navigateHome() }
-                    )
+                        is AppScreen.UpdateData -> UpdateDataScreen(
+                            onBack = { navigateHome() }
+                        )
 
-                    is AppScreen.Settings -> SettingsScreen(
-                        onBack = { navigateHome() },
-                        onSettingsChanged = { settingsVersion++ }
-                    )
+                        is AppScreen.Settings -> SettingsScreen(
+                            onBack = { navigateHome() },
+                            onSettingsChanged = { settingsVersion++ }
+                        )
+                    }
                 }
             }
         }

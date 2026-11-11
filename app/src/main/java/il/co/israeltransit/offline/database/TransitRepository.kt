@@ -18,7 +18,8 @@ class TransitRepository(
         val agencyName: String,
         val routeType: String,
         val originName: String = "",
-        val destinationName: String = ""
+        val destinationName: String = "",
+        val routeDesc: String = ""
     )
 
     data class GroupedTransitLine(
@@ -80,6 +81,7 @@ class TransitRepository(
                         val agencyId = cursor.getString(3) ?: ""
                         val agencyName = cursor.getString(4) ?: ""
                         val routeType = cursor.getString(5) ?: ""
+                        val routeDesc = if (cursor.columnCount > 6) cursor.getString(6) ?: "" else ""
 
                         val parts = longName.split("<->", "⟷", "-", "–")
                         val origin = parts.getOrNull(0)?.trim() ?: ""
@@ -94,7 +96,8 @@ class TransitRepository(
                                 agencyName = agencyName,
                                 routeType = routeType,
                                 originName = origin,
-                                destinationName = dest
+                                destinationName = dest,
+                                routeDesc = routeDesc
                             )
                         )
                     }
@@ -120,7 +123,8 @@ class TransitRepository(
                 COALESCE(r.route_long_name, ''),
                 COALESCE(r.agency_id, ''),
                 COALESCE(a.agency_name, ''),
-                COALESCE(r.route_type, '')
+                COALESCE(r.route_type, ''),
+                COALESCE(r.route_desc, '')
             FROM routes r
             LEFT JOIN agency a ON a.agency_id = r.agency_id
             WHERE
@@ -225,7 +229,8 @@ class TransitRepository(
                 COALESCE(r.route_long_name, ''),
                 COALESCE(r.agency_id, ''),
                 COALESCE(a.agency_name, ''),
-                COALESCE(r.route_type, '')
+                COALESCE(r.route_type, ''),
+                COALESCE(r.route_desc, '')
             FROM routes r
             LEFT JOIN agency a ON a.agency_id = r.agency_id
             $whereClause
@@ -238,17 +243,34 @@ class TransitRepository(
             (args + listOf(cleanQuery, (limit * 3).coerceIn(1, 1000).toString())).toTypedArray()
         )
 
-        // קיבוץ לפי מספר קו ומפעיל (או מוצא ויעד עיקריים)
+        // קיבוץ חכם לפי מק"ט קו רישוי מתוך route_desc (או גיבוי לפי עיר ומפעיל)
         val groupedMap = linkedMapOf<String, MutableList<TransitLine>>()
         for (line in rawLines) {
-            val key = "${line.lineNumber}_${line.agencyName}"
+            val descParts = line.routeDesc.split("-", "–")
+            val lineRef = descParts.getOrNull(0)?.trim().orEmpty()
+            val alternative = descParts.getOrNull(2)?.trim().orEmpty()
+
+            val key = if (lineRef.isNotEmpty()) {
+                "${line.agencyId}_${line.lineNumber}_${lineRef}_${alternative}"
+            } else {
+                val origin = line.originName.ifBlank { line.name }
+                val dest = line.destinationName
+                "${line.agencyId}_${line.lineNumber}_${formatCityHeader(origin, dest)}"
+            }
+
             groupedMap.getOrPut(key) { mutableListOf() }.add(line)
         }
 
         val result = mutableListOf<GroupedTransitLine>()
         for ((_, linesList) in groupedMap) {
-            val forward = linesList.first()
-            val backward = linesList.getOrNull(1)
+            // כיוון 1 כהלוך, כיוון 2 כחזור
+            val forward = linesList.firstOrNull {
+                it.routeDesc.split("-", "–").getOrNull(1)?.trim() == "1"
+            } ?: linesList.first()
+
+            val backward = linesList.firstOrNull {
+                it.routeDesc.split("-", "–").getOrNull(1)?.trim() == "2" && it != forward
+            } ?: linesList.getOrNull(1)?.takeIf { it != forward }
 
             val origin = forward.originName.ifBlank { forward.name }
             val dest = forward.destinationName.ifBlank { backward?.originName.orEmpty() }
@@ -295,7 +317,8 @@ class TransitRepository(
                 COALESCE(r.route_long_name, ''),
                 COALESCE(r.agency_id, ''),
                 COALESCE(a.agency_name, ''),
-                COALESCE(r.route_type, '')
+                COALESCE(r.route_type, ''),
+                COALESCE(r.route_desc, '')
             FROM routes r
             LEFT JOIN agency a ON a.agency_id = r.agency_id
             WHERE r.route_id = ?

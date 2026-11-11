@@ -167,7 +167,7 @@ fun TransitApp() {
                 modifier = Modifier.fillMaxSize(),
                 color = MaterialTheme.colorScheme.background
             ) {
-                stateHolder.SaveableStateProvider(screen::class.java.name) {
+                stateHolder.SaveableStateProvider(currentScreen.javaClass.name) {
                     when (val screen = currentScreen) {
                         is AppScreen.Home -> HomeScreen(onNavigate = { navigateTo(it) })
 

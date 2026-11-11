@@ -88,9 +88,13 @@ class TransitRepository(
             val rawOrigin = mainParts[0].trim()
             val rawDest = mainParts[1].trim()
 
-            val originTokens = rawOrigin.split("-", "–").map { it.trim() }.filter { it.isNotEmpty() }
+            var originTokens = rawOrigin.split("-", "–").map { it.trim() }.filter { it.isNotEmpty() }
+            while (originTokens.isNotEmpty() && (originTokens.last().all { it.isDigit() } || originTokens.last().contains("#"))) {
+                originTokens = originTokens.dropLast(1)
+            }
+
             val (origStation, origCity) = if (originTokens.size >= 2) {
-                val city = originTokens.last()
+                val city = originTokens.last().replace("#", "").trim()
                 val station = originTokens.dropLast(1).joinToString("-")
                 station to city
             } else {
@@ -98,16 +102,16 @@ class TransitRepository(
             }
 
             var destTokens = rawDest.split("-", "–").map { it.trim() }.filter { it.isNotEmpty() }
-            if (destTokens.isNotEmpty() && destTokens.last().all { it.isDigit() }) {
+            while (destTokens.isNotEmpty() && (destTokens.last().all { it.isDigit() } || destTokens.last().contains("#"))) {
                 destTokens = destTokens.dropLast(1)
             }
 
             val (destStation, destCity) = if (destTokens.size >= 2) {
-                val city = destTokens.last()
+                val city = destTokens.last().replace("#", "").trim()
                 val station = destTokens.dropLast(1).joinToString("-")
                 station to city
             } else if (destTokens.isNotEmpty()) {
-                destTokens.first() to ""
+                destTokens.first().replace("#", "").trim() to ""
             } else {
                 rawDest to ""
             }
@@ -189,7 +193,6 @@ class TransitRepository(
             LEFT JOIN agency a ON a.agency_id = r.agency_id
             WHERE
                 r.route_short_name LIKE ?
-                OR r.route_long_name LIKE ?
             ORDER BY
                 CASE WHEN r.route_short_name = ? THEN 0 ELSE 1 END,
                 r.route_short_name
@@ -197,7 +200,6 @@ class TransitRepository(
             """.trimIndent(),
             arrayOf(
                 "$query%",
-                "%$query%",
                 query,
                 limit.coerceIn(1, 500).toString()
             )
@@ -222,7 +224,7 @@ class TransitRepository(
     }
 
     /**
-     * עיצוב כותרת העיר/ערים: עיר אחת לקו עירוני, או עיר A ⟷ עיר B לקו בין-עירוני
+     * עיצוב כותרת העיר/ערים: עיר אחת לקו עירוני, או עיר A ↔️ עיר B לקו בין-עירוני
      */
     private fun formatCityHeader(origin: String, destination: String): String {
         val cityA = origin.trim().ifEmpty { extractCity(origin) }
@@ -263,20 +265,15 @@ class TransitRepository(
         val conditions = mutableListOf<String>()
         val args = mutableListOf<String>()
 
+        // חיפוש לפי מספר קו בלבד
         if (cleanQuery.isNotEmpty()) {
-            conditions.add("(r.route_short_name LIKE ? OR r.route_long_name LIKE ?)")
+            conditions.add("r.route_short_name LIKE ?")
             args.add("$cleanQuery%")
-            args.add("%$cleanQuery%")
         }
 
         if (cleanAgency.isNotEmpty()) {
             conditions.add("a.agency_name LIKE ?")
             args.add("%$cleanAgency%")
-        }
-
-        if (cleanCity.isNotEmpty()) {
-            conditions.add("r.route_long_name LIKE ?")
-            args.add("%$cleanCity%")
         }
 
         val whereClause = if (conditions.isNotEmpty()) "WHERE " + conditions.joinToString(" AND ") else ""
@@ -303,7 +300,7 @@ class TransitRepository(
             (args + listOf(cleanQuery, (limit * 3).coerceIn(1, 1000).toString())).toTypedArray()
         )
 
-        // קיבוץ לפי מק"ט קו רישוי מתוך route_desc + חלופה (מונע איחוד קווים דומים בערים שונות)
+        // קיבוץ לפי מק"ט קו רישוי מתוך route_desc + חלופה
         val groupedMap = linkedMapOf<String, MutableList<TransitLine>>()
         for (line in rawLines) {
             val descParts = line.routeDesc.split("-", "–")
@@ -348,13 +345,13 @@ class TransitRepository(
                 "$cityA ⟷ $cityB"
             }
 
-            // בדיקת סינון עיר
+            // סינון לפי עיר: בדיקה אך ורק מול שמות הערים המבודדים
             if (cleanCity.isNotEmpty()) {
                 val normCity = OperatorTheme.normalizeHebrew(cleanCity)
-                val matchesOrigin = OperatorTheme.normalizeHebrew(originStation).contains(normCity) || normA.contains(normCity)
-                val matchesDest = OperatorTheme.normalizeHebrew(destStation).contains(normCity) || normB.contains(normCity)
-                val matchesHeader = OperatorTheme.normalizeHebrew(cityHeader).contains(normCity)
-                if (!matchesOrigin && !matchesDest && !matchesHeader) {
+                val normOrigCity = OperatorTheme.normalizeHebrew(cityA)
+                val normDestCity = OperatorTheme.normalizeHebrew(cityB)
+                val matchesCity = normOrigCity.contains(normCity) || normDestCity.contains(normCity)
+                if (!matchesCity) {
                     continue
                 }
             }

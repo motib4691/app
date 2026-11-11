@@ -283,7 +283,7 @@ fun StopSearchScreen(
         }
     }
 
-    // אם נכנסנו ישירות לתחנה ספציפית (למשל מפרטי קו) - חזרה סוגרת את המסך וחוזרת לקו
+    // אם נכנסנו ישירות לתחנה ספציפית מפרטי קו - מקש החזור במכשיר האנדרואיד חוזר ישירות לפרטי הקו
     BackHandler(enabled = isMapFullScreen || (selectedStop != null && initialStop == null)) {
         if (isMapFullScreen) {
             isMapFullScreen = false
@@ -743,16 +743,15 @@ fun LineSearchScreen(
 
     var groupedLines by remember { mutableStateOf(emptyList<TransitRepository.GroupedTransitLine>()) }
 
-    // שימור מזהה הקו הפתוח כדי שחזרה מפרטי תחנה תחזיר ישירות לפרטי הקו
     var selectedRouteId by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedLine by remember { mutableStateOf<TransitRepository.TransitLine?>(null) }
+    var selectedStopSequenceIndex by rememberSaveable { mutableIntStateOf(0) }
 
     var variants by remember { mutableStateOf(emptyList<RouteVariant>()) }
     var selectedVariantIndex by remember { mutableIntStateOf(0) }
     var dailyDepartures by remember { mutableStateOf(emptyList<TransitScheduleRepository.Departure>()) }
     var selectedDayType by remember { mutableIntStateOf(0) }
 
-    var selectedStopSequenceIndex by remember { mutableIntStateOf(0) }
     var selectedTripIdForTimeline by remember { mutableStateOf<String?>(null) }
     var tripStopTimesMap by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
 
@@ -771,7 +770,6 @@ fun LineSearchScreen(
         }
     }
 
-    // שחזור הקו שנבחר במידה וחוזרים ממסך פרטי תחנה
     LaunchedEffect(selectedRouteId) {
         val rId = selectedRouteId
         if (rId != null && selectedLine == null) {
@@ -960,7 +958,6 @@ fun LineSearchScreen(
                 }
             )
 
-            // נקודה 1: סידור שדות הסינון בגובה אחיד ומתואם שמתאים למסכים קטנים
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1034,7 +1031,6 @@ fun LineSearchScreen(
                 }
             }
 
-            // נקודה 2: הורדת מקלדת אוטומטית בעת לחיצה על חיפוש אחרון
             if (query.isBlank() && searchHistory.isNotEmpty()) {
                 Text("חיפושים אחרונים:", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1058,7 +1054,6 @@ fun LineSearchScreen(
                 }
             }
 
-            // פונקציית עזר לעיצוב כיוון הנסיעה: מ- [מוצא] ← ל- [יעד]
             fun formatDirectionText(line: TransitRepository.TransitLine, isUrban: Boolean): String {
                 val orig = if (isUrban || line.originCity.isBlank() || line.originName.contains(line.originCity)) {
                     line.originName.ifBlank { line.name }
@@ -1079,7 +1074,6 @@ fun LineSearchScreen(
                 }
             }
 
-            // נקודה 5: עיצוב כרטיסיות בולט ומופרד עם מסגרת ברורה
             groupedLines.forEach { group ->
                 Card(
                     modifier = Modifier
@@ -1091,7 +1085,6 @@ fun LineSearchScreen(
                     elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
                 ) {
                     Column {
-                        // נקודה 3: בכותרת הכרטיסייה - שם העיר בלבד בקו עירוני, או שתי הערים עם ⟷ בקו בין-עירוני
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1114,7 +1107,6 @@ fun LineSearchScreen(
                             }
                         }
 
-                        // נקודה 4: כיוון א' - מ- [מוצא] ← ל- [יעד] ללא שם עיר בעירוני, ועם שם עיר בבין-עירוני
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1137,7 +1129,6 @@ fun LineSearchScreen(
                             Text("←", fontSize = 16.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                         }
 
-                        // נקודה 4: כיוון ב' (אם קיים)
                         if (group.backwardLine != null) {
                             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
                             Row(
@@ -1170,7 +1161,6 @@ fun LineSearchScreen(
             val activeVariant = variants.getOrNull(selectedVariantIndex)
             val currentStops = activeVariant?.stops ?: emptyList()
 
-            // איתור הכיוון הנגדי של אותו קו
             val matchingGroup = groupedLines.firstOrNull {
                 it.forwardLine.routeId == line.routeId || it.backwardLine?.routeId == line.routeId
             }
@@ -1178,13 +1168,11 @@ fun LineSearchScreen(
                 if (matchingGroup.forwardLine.routeId == line.routeId) matchingGroup.backwardLine else matchingGroup.forwardLine
             } else null
 
-            // בדיקה האם הקו עירוני
             val normOrigCity = OperatorTheme.normalizeHebrew(line.originCity)
             val normDestCity = OperatorTheme.normalizeHebrew(line.destinationCity)
             val isUrbanLine = line.originCity.isNotBlank() && line.destinationCity.isNotBlank() &&
                     (normOrigCity == normDestCity || normOrigCity.contains(normDestCity) || normDestCity.contains(normOrigCity))
 
-            // נקודה 6 ו-7: עמוד פרטי הקו
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
@@ -1202,7 +1190,6 @@ fun LineSearchScreen(
                             TransitLineBadge(lineNumber = line.lineNumber, agencyName = line.agencyName)
                             Text(line.agencyName, fontWeight = FontWeight.Medium, fontSize = 13.sp)
 
-                            // נקודה 7: שם העיר לצד המפעיל, או "מ- עיר מוצא ← ל- עיר יעד" בקו בין-עירוני
                             val topCityLabel = if (isUrbanLine || line.destinationCity.isBlank()) {
                                 line.originCity.ifBlank { line.destinationCity }
                             } else {
@@ -1214,7 +1201,6 @@ fun LineSearchScreen(
                             }
                         }
 
-                        // נקודה 6: כפתור החלפה לכיוון הנגדי (במקום כפתור החזרה לרשימה)
                         if (oppositeLine != null) {
                             FilledTonalButton(
                                 onClick = {
@@ -1230,9 +1216,18 @@ fun LineSearchScreen(
                         }
                     }
 
-                    // נקודה 7: שורה שנייה בולטת - מ- [מוצא ועיר] ← ל- [יעד ועיר] עם חץ שמאלה
-                    val originFull = "${line.originName}${if (line.originCity.isNotBlank()) " - " + line.originCity else ""}"
-                    val destFull = "${line.destinationName}${if (line.destinationCity.isNotBlank()) " - " + line.destinationCity else ""}"
+                    val originFull = if (line.originCity.isNotBlank() && !line.originName.contains(line.originCity)) {
+                        "${line.originName} - ${line.originCity}"
+                    } else {
+                        line.originName
+                    }
+
+                    val destFull = if (line.destinationCity.isNotBlank() && !line.destinationName.contains(line.destinationCity)) {
+                        "${line.destinationName} - ${line.destinationCity}"
+                    } else {
+                        line.destinationName
+                    }
+
                     val mainHeading = if (destFull.isNotBlank()) "מ- $originFull ← ל- $destFull" else originFull
 
                     Text(mainHeading, fontWeight = FontWeight.Bold, fontSize = 14.5.sp)
@@ -1240,7 +1235,6 @@ fun LineSearchScreen(
                 }
             }
 
-            // נקודה 8: ציר התחנות עם כיתוב חי בירוק הכולל חישוב דקות
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
@@ -1252,7 +1246,6 @@ fun LineSearchScreen(
                     val refStop = currentStops.getOrNull(selectedStopSequenceIndex)
                     val nextTimeForRef = refStop?.let { tripStopTimesMap[it.stopId] } ?: ""
 
-                    // חישוב הפרש הדקות מהשעה הנוכחית
                     val minutesDiff = remember(nextTimeForRef) {
                         if (nextTimeForRef.isBlank()) null
                         else {
@@ -1332,7 +1325,6 @@ fun LineSearchScreen(
                 }
             }
 
-            // לוח זמנים יומי
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
@@ -1404,7 +1396,6 @@ fun LineSearchScreen(
                 }
             }
 
-            // מפה מוקטנת של מסלול הקו
             if (mapStorage.isMapAvailable()) {
                 val renderLineOnMap: (org.maplibre.android.maps.MapLibreMap) -> Unit = { map ->
                     map.getStyle { style ->

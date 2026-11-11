@@ -19,6 +19,8 @@ class TransitRepository(
         val routeType: String,
         val originName: String = "",
         val destinationName: String = "",
+        val originCity: String = "",
+        val destinationCity: String = "",
         val routeDesc: String = ""
     )
 
@@ -31,7 +33,8 @@ class TransitRepository(
         val primaryOrigin: String,
         val primaryDestination: String,
         val forwardLine: TransitLine,
-        val backwardLine: TransitLine? = null
+        val backwardLine: TransitLine? = null,
+        val isUrban: Boolean = true
     )
 
     data class TransitStop(
@@ -65,6 +68,63 @@ class TransitRepository(
         val stopCode: String = stopId
     )
 
+    private data class ParsedRouteName(
+        val originStation: String,
+        val originCity: String,
+        val destStation: String,
+        val destCity: String
+    )
+
+    /**
+     * פירוק מדויק של שמות התחנות והערים מתוך route_long_name לפי הפורמט של משרד התחבורה:
+     * תחנת מוצא-עיר מוצא<->תחנת יעד-עיר יעד-חלופה
+     */
+    private fun parseRouteLongName(longName: String): ParsedRouteName {
+        val clean = longName.trim()
+        if (clean.isEmpty()) return ParsedRouteName("", "", "", "")
+
+        val mainParts = clean.split("<->", "⟷", "<=>")
+        if (mainParts.size >= 2) {
+            val rawOrigin = mainParts[0].trim()
+            val rawDest = mainParts[1].trim()
+
+            val originTokens = rawOrigin.split("-", "–").map { it.trim() }.filter { it.isNotEmpty() }
+            val (origStation, origCity) = if (originTokens.size >= 2) {
+                val city = originTokens.last()
+                val station = originTokens.dropLast(1).joinToString("-")
+                station to city
+            } else {
+                rawOrigin to ""
+            }
+
+            var destTokens = rawDest.split("-", "–").map { it.trim() }.filter { it.isNotEmpty() }
+            if (destTokens.isNotEmpty() && destTokens.last().all { it.isDigit() }) {
+                destTokens = destTokens.dropLast(1)
+            }
+
+            val (destStation, destCity) = if (destTokens.size >= 2) {
+                val city = destTokens.last()
+                val station = destTokens.dropLast(1).joinToString("-")
+                station to city
+            } else if (destTokens.isNotEmpty()) {
+                destTokens.first() to ""
+            } else {
+                rawDest to ""
+            }
+
+            return ParsedRouteName(origStation, origCity, destStation, destCity)
+        }
+
+        val parts = clean.split("-", "–").map { it.trim() }.filter { it.isNotEmpty() }
+        return when {
+            parts.size >= 4 -> ParsedRouteName(parts[0], parts[1], parts[2], parts[3])
+            parts.size == 3 -> ParsedRouteName(parts[0], parts[1], parts[2], parts[1])
+            parts.size == 2 -> ParsedRouteName(parts[0], "", parts[1], "")
+            parts.size == 1 -> ParsedRouteName(parts[0], "", "", "")
+            else -> ParsedRouteName("", "", "", "")
+        }
+    }
+
     private fun queryLines(
         sql: String,
         args: Array<String>
@@ -83,9 +143,7 @@ class TransitRepository(
                         val routeType = cursor.getString(5) ?: ""
                         val routeDesc = if (cursor.columnCount > 6) cursor.getString(6) ?: "" else ""
 
-                        val parts = longName.split("<->", "⟷", "-", "–")
-                        val origin = parts.getOrNull(0)?.trim() ?: ""
-                        val dest = parts.getOrNull(1)?.trim() ?: ""
+                        val parsed = parseRouteLongName(longName)
 
                         add(
                             TransitLine(
@@ -95,8 +153,10 @@ class TransitRepository(
                                 agencyId = agencyId,
                                 agencyName = agencyName,
                                 routeType = routeType,
-                                originName = origin,
-                                destinationName = dest,
+                                originName = parsed.originStation.ifBlank { longName },
+                                destinationName = parsed.destStation,
+                                originCity = parsed.originCity,
+                                destinationCity = parsed.destCity,
                                 routeDesc = routeDesc
                             )
                         )
@@ -162,11 +222,11 @@ class TransitRepository(
     }
 
     /**
-     * עיצוב כותרת העיר/ערים: עיר אחת לקו עירוני, או עיר A ↔️ עיר B לקו בין-עירוני
+     * עיצוב כותרת העיר/ערים: עיר אחת לקו עירוני, או עיר A ⟷ עיר B לקו בין-עירוני
      */
     private fun formatCityHeader(origin: String, destination: String): String {
-        val cityA = extractCity(origin)
-        val cityB = extractCity(destination)
+        val cityA = origin.trim().ifEmpty { extractCity(origin) }
+        val cityB = destination.trim().ifEmpty { extractCity(destination) }
 
         if (cityA.isBlank() && cityB.isBlank()) return ""
         if (cityA.isBlank()) return cityB
@@ -178,7 +238,7 @@ class TransitRepository(
         return if (normA == normB || normA.contains(normB) || normB.contains(normA)) {
             cityA
         } else {
-            "$cityA ↔️ $cityB"
+            "$cityA ⟷ $cityB"
         }
     }
 
@@ -243,7 +303,7 @@ class TransitRepository(
             (args + listOf(cleanQuery, (limit * 3).coerceIn(1, 1000).toString())).toTypedArray()
         )
 
-        // קיבוץ חכם לפי מק"ט קו רישוי מתוך route_desc (או גיבוי לפי עיר ומפעיל)
+        // קיבוץ לפי מק"ט קו רישוי מתוך route_desc + חלופה (מונע איחוד קווים דומים בערים שונות)
         val groupedMap = linkedMapOf<String, MutableList<TransitLine>>()
         for (line in rawLines) {
             val descParts = line.routeDesc.split("-", "–")
@@ -253,9 +313,9 @@ class TransitRepository(
             val key = if (lineRef.isNotEmpty()) {
                 "${line.agencyId}_${line.lineNumber}_${lineRef}_${alternative}"
             } else {
-                val origin = line.originName.ifBlank { line.name }
-                val dest = line.destinationName
-                "${line.agencyId}_${line.lineNumber}_${formatCityHeader(origin, dest)}"
+                val cA = line.originCity.ifBlank { extractCity(line.originName) }
+                val cB = line.destinationCity.ifBlank { extractCity(line.destinationName) }
+                "${line.agencyId}_${line.lineNumber}_${formatCityHeader(cA, cB)}"
             }
 
             groupedMap.getOrPut(key) { mutableListOf() }.add(line)
@@ -263,7 +323,7 @@ class TransitRepository(
 
         val result = mutableListOf<GroupedTransitLine>()
         for ((_, linesList) in groupedMap) {
-            // כיוון 1 כהלוך, כיוון 2 כחזור
+            // כיוון 1 כהלוך וכיוון 2 כחזור
             val forward = linesList.firstOrNull {
                 it.routeDesc.split("-", "–").getOrNull(1)?.trim() == "1"
             } ?: linesList.first()
@@ -272,16 +332,27 @@ class TransitRepository(
                 it.routeDesc.split("-", "–").getOrNull(1)?.trim() == "2" && it != forward
             } ?: linesList.getOrNull(1)?.takeIf { it != forward }
 
-            val origin = forward.originName.ifBlank { forward.name }
-            val dest = forward.destinationName.ifBlank { backward?.originName.orEmpty() }
+            val originStation = forward.originName.ifBlank { forward.name }
+            val destStation = forward.destinationName.ifBlank { backward?.originName.orEmpty() }
 
-            val cityHeader = formatCityHeader(origin, dest)
+            val cityA = forward.originCity.ifBlank { backward?.destinationCity.orEmpty() }
+            val cityB = forward.destinationCity.ifBlank { backward?.originCity.orEmpty() }
 
-            // בדיקת סינון עיר נוספת על כותרת הערים והמוצא/יעד
+            val normA = OperatorTheme.normalizeHebrew(cityA)
+            val normB = OperatorTheme.normalizeHebrew(cityB)
+            val isUrban = cityA.isNotBlank() && cityB.isNotBlank() && (normA == normB || normA.contains(normB) || normB.contains(normA))
+
+            val cityHeader = if (isUrban || cityB.isBlank()) {
+                cityA.ifBlank { cityB }
+            } else {
+                "$cityA ⟷ $cityB"
+            }
+
+            // בדיקת סינון עיר
             if (cleanCity.isNotEmpty()) {
                 val normCity = OperatorTheme.normalizeHebrew(cleanCity)
-                val matchesOrigin = OperatorTheme.normalizeHebrew(origin).contains(normCity)
-                val matchesDest = OperatorTheme.normalizeHebrew(dest).contains(normCity)
+                val matchesOrigin = OperatorTheme.normalizeHebrew(originStation).contains(normCity) || normA.contains(normCity)
+                val matchesDest = OperatorTheme.normalizeHebrew(destStation).contains(normCity) || normB.contains(normCity)
                 val matchesHeader = OperatorTheme.normalizeHebrew(cityHeader).contains(normCity)
                 if (!matchesOrigin && !matchesDest && !matchesHeader) {
                     continue
@@ -295,10 +366,11 @@ class TransitRepository(
                     agencyId = forward.agencyId,
                     routeType = forward.routeType,
                     cityHeader = cityHeader,
-                    primaryOrigin = origin,
-                    primaryDestination = dest,
+                    primaryOrigin = originStation,
+                    primaryDestination = destStation,
                     forwardLine = forward,
-                    backwardLine = backward
+                    backwardLine = backward,
+                    isUrban = isUrban
                 )
             )
 
@@ -342,7 +414,6 @@ class TransitRepository(
         val cleanQuery = raw.replace("[\"'״׳]".toRegex(), "")
         val normQuery = OperatorTheme.normalizeHebrew(raw)
 
-        // בדיקה האם יש תחנה שמורה שהשם האישי שלה תואם לשאילתה
         val matchedSavedStops = savedStops.filter { saved ->
             val normCustom = OperatorTheme.normalizeHebrew(saved.customName)
             normCustom.contains(normQuery) || saved.stopCode.startsWith(raw)
@@ -406,7 +477,6 @@ class TransitRepository(
                 }
             }
 
-            // שילוב תחנות שמורות עם שם מותאם אישית שטרם הופיעו בתוצאות
             val finalStops = mutableListOf<TransitStop>()
 
             for (saved in matchedSavedStops) {
@@ -414,7 +484,6 @@ class TransitRepository(
                 if (existing != null) {
                     finalStops.add(existing.copy(customName = saved.customName))
                 } else {
-                    // שליפה נקודתית של התחנה השמורה מהמאגר
                     db.rawQuery(
                         "SELECT stop_id, COALESCE(NULLIF(stop_code, ''), stop_id), COALESCE(stop_name, ''), stop_lat, stop_lon FROM stops WHERE stop_id = ? LIMIT 1",
                         arrayOf(saved.stopId)
@@ -435,7 +504,6 @@ class TransitRepository(
                 }
             }
 
-            // הוספת יתר תוצאות מסד הנתונים
             for (st in dbStops) {
                 if (finalStops.none { it.stopId == st.stopId }) {
                     finalStops.add(st)
@@ -659,7 +727,8 @@ class TransitRepository(
                     COALESCE(r.route_long_name, ''),
                     COALESCE(r.agency_id, ''),
                     COALESCE(a.agency_name, ''),
-                    COALESCE(r.route_type, '')
+                    COALESCE(r.route_type, ''),
+                    COALESCE(r.route_desc, '')
                 FROM stop_times st
                 JOIN trips t ON t.trip_id = st.trip_id
                 JOIN routes r ON r.route_id = t.route_id
@@ -675,9 +744,7 @@ class TransitRepository(
                 val lines = mutableListOf<TransitLine>()
                 while (cursor.moveToNext()) {
                     val longName = cursor.getString(2) ?: ""
-                    val parts = longName.split("<->", "⟷", "-", "–")
-                    val origin = parts.getOrNull(0)?.trim() ?: ""
-                    val dest = parts.getOrNull(1)?.trim() ?: ""
+                    val parsed = parseRouteLongName(longName)
 
                     lines.add(
                         TransitLine(
@@ -687,16 +754,19 @@ class TransitRepository(
                             agencyId = cursor.getString(3) ?: "",
                             agencyName = cursor.getString(4) ?: "",
                             routeType = cursor.getString(5) ?: "",
-                            originName = origin,
-                            destinationName = dest
+                            originName = parsed.originStation.ifBlank { longName },
+                            destinationName = parsed.destStation,
+                            originCity = parsed.originCity,
+                            destinationCity = parsed.destCity,
+                            routeDesc = cursor.getString(6) ?: ""
                         )
                     )
                 }
 
                 lines.sortedWith(
                     compareBy<TransitLine> { line ->
-                        val isUrban = line.originName.isNotBlank() && line.destinationName.isNotBlank() &&
-                                OperatorTheme.normalizeHebrew(line.originName) == OperatorTheme.normalizeHebrew(line.destinationName)
+                        val isUrban = line.originCity.isNotBlank() && line.destinationCity.isNotBlank() &&
+                                OperatorTheme.normalizeHebrew(line.originCity) == OperatorTheme.normalizeHebrew(line.destinationCity)
                         if (isUrban) 0 else 1
                     }.thenBy { it.lineNumber.toIntOrNull() ?: Int.MAX_VALUE }
                      .thenBy { it.lineNumber }

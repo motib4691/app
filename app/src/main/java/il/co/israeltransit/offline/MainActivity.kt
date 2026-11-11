@@ -173,13 +173,7 @@ fun TransitApp() {
 
                         is AppScreen.StopSearch -> StopSearchScreen(
                             initialStop = screen.initialStop,
-                            onBack = {
-                                if (screen.initialStop != null) {
-                                    navigateBack()
-                                } else {
-                                    navigateHome()
-                                }
-                            },
+                            onBack = { navigateHome() },
                             onNavigateToLine = { lineNumber ->
                                 navigateTo(AppScreen.LineSearch(lineNumber))
                             },

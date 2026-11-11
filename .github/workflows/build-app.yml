@@ -1,4 +1,3 @@
-
 name: Build Android APK
 
 on:
@@ -6,7 +5,7 @@ on:
   push:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: android-apk-build
@@ -27,6 +26,34 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+
+      - name: Ensure persistent debug keystore
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.android
+
+          if [ ! -f "app/debug.keystore" ]; then
+            echo "Creating permanent debug keystore for consistent APK signatures..."
+            keytool -genkeypair \
+              -alias androiddebugkey \
+              -keypass android \
+              -keystore app/debug.keystore \
+              -storepass android \
+              -dname "CN=Android Debug,O=Android,C=US" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000
+
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add app/debug.keystore
+            git commit -m "Add permanent debug keystore [skip ci]" || true
+            git push || true
+          fi
+
+          cp app/debug.keystore ~/.android/debug.keystore
+          echo "Persistent debug keystore is ready and active."
 
       - name: Prepare offline Hebrew map fonts
         shell: bash
